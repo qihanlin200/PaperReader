@@ -1,4 +1,5 @@
 """Deep-space desktop theme, shared by the main window and dialogs."""
+from pathlib import Path
 from PySide6.QtGui import QColor, QFont, QPalette
 from PySide6.QtWidgets import QApplication
 
@@ -45,6 +46,8 @@ QPushButton#Primary:hover { background: #8ce9e6; }
 QPushButton#Primary:disabled { background: #294d53; color: #7ea6ac; border-color: #294d53; }
 QPushButton#Quiet { background: transparent; border-color: transparent; color: #a6b8ce; }
 QPushButton#Quiet:hover { background: #1c2c3d; color: #e4ebf5; }
+QPushButton#QuestionMarker { background: transparent; color: #66ddda; border: none; padding: 0; min-height: 0; font-size: 18px; }
+QPushButton#QuestionMarker:hover { background: #294251; }
 QPushButton#NavButton { padding: 3px 8px; min-height: 18px; }
 QPushButton#Danger { color: #efb0b3; }
 QPushButton:focus, QLineEdit:focus, QTextEdit:focus { border-color: #66ddda; }
@@ -52,7 +55,7 @@ QListWidget { background: transparent; border: none; outline: none; padding: 4px
 QListWidget::item { padding: 12px 9px; margin: 3px 0; border-radius: 6px; border: 1px solid transparent; }
 QListWidget::item:hover { background: #142130; }
 QListWidget::item:selected { background: #172c38; color: #e0f4f2; border-color: #355665; }
-QListWidget#PaperList::item { min-height: 46px; }
+QListWidget#PaperList::item { min-height: 20px; padding: 7px 9px; }
 QTabWidget::pane { border: none; background: #101824; }
 QTabBar { background: #101824; }
 QTabBar::tab { background: transparent; color: #93a4ba; padding: 11px 12px; border-bottom: 2px solid transparent; }
@@ -60,8 +63,19 @@ QTabBar::tab:selected { color: #66ddda; border-bottom-color: #66ddda; }
 QTabBar::tab:hover { background: #172536; }
 QTextBrowser { background: #101824; border: none; padding: 12px; selection-background-color: #305663; selection-color: #ffffff; }
 QTextEdit { background: #111c2a; border: 1px solid #2e4056; border-radius: 6px; padding: 10px; selection-background-color: #305663; }
+QWidget#ComposerFooter { background: #111c2a; }
+QComboBox { background: #172736; color: #c5d9e2; border: 1px solid #344b60; border-radius: 5px; padding: 6px 36px 6px 10px; min-height: 20px; }
+QComboBox:hover { border-color: #66ddda; background: #1d3342; }
+QComboBox::drop-down { subcontrol-origin: border; subcontrol-position: top right; border-left: 1px solid #3d596c; border-top-right-radius: 5px; border-bottom-right-radius: 5px; background: #244151; width: 30px; }
+QComboBox::drop-down:hover { background: #305465; }
+QComboBox::down-arrow { image: url("__DROPDOWN_ARROW__"); width: 14px; height: 14px; }
+QComboBox:disabled { color: #7b8d9d; border-color: #2a3949; }
+QComboBox QAbstractItemView { background: #162231; color: #e4ebf5; selection-background-color: #294251; }
 QLineEdit { background: #0c1521; border: 1px solid #34475b; border-radius: 6px; padding: 9px 11px; min-height: 22px; selection-background-color: #305663; }
-QTextBrowser#Quote { background: #142530; border: 1px solid #35515c; border-radius: 6px; color: #afc4d5; padding: 6px; }
+QWidget#QuoteCard { background: #142530; border: 1px solid #35515c; border-radius: 7px; }
+QTextBrowser#Quote { background: transparent; border: none; color: #afc4d5; padding: 0; }
+QPushButton#QuoteClose { background: #203b48; color: #b9d8dd; border: 1px solid #3d5e6a; border-radius: 12px; padding: 0; min-height: 0; font-size: 17px; }
+QPushButton#QuoteClose:hover { background: #365866; color: #ffffff; border-color: #66ddda; }
 QScrollArea { border: none; background: #0a111b; }
 QScrollArea > QWidget > QWidget { background: #0a111b; }
 QScrollBar:vertical { background: #101824; width: 9px; margin: 0; }
@@ -102,4 +116,5 @@ def apply_theme():
     }.items(): palette.setColor(role, QColor(value))
     app.setPalette(palette)
     font = QFont(app.font()); font.setPointSize(11); app.setFont(font)
-    app.setStyleSheet(STYLESHEET)
+    arrow = (Path(__file__).resolve().parent.parent / "assets" / "dropdown-arrow.svg").as_posix()
+    app.setStyleSheet(STYLESHEET.replace("__DROPDOWN_ARROW__", arrow))

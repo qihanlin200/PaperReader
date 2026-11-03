@@ -1,31 +1,87 @@
 """Markdown display for untrusted model output, without HTML or image loading."""
-from PySide6.QtGui import QTextDocument, QTextCursor, QTextBlockFormat, QTextCharFormat, QTextFormat
+from PySide6.QtCore import Signal, Qt
+from PySide6.QtGui import QTextDocument, QTextCursor, QTextBlockFormat, QTextCharFormat, QTextFormat, QTextTable, QColor, QBrush
 from PySide6.QtWidgets import QTextBrowser
 from paperreader.ui.theme import DOCUMENT_CSS
+from paperreader.ui.math_render import markdown_html
 
 
 class MarkdownBrowser(QTextBrowser):
-    def __init__(self, parent=None, reading_style=False):
+    followUpRequested = Signal(str)
+
+    def __init__(self, parent=None, reading_style=False, allow_followup=False):
         super().__init__(parent)
+        self.math_resources = {}
+        self.math_sources = {}
         self.reading_style = reading_style
+        self.allow_followup = allow_followup
         self.document().setDefaultStyleSheet(DOCUMENT_CSS)
         self.document().setDocumentMargin(10)
         self.setOpenExternalLinks(False)
         self.setOpenLinks(False)
 
+    def setHtml(self, text):
+        super().setHtml(text)
+        def visit(frame):
+            for child in frame.childFrames():
+                if isinstance(child, QTextTable):
+                    fmt = child.format()
+                    fmt.setAlignment(Qt.AlignmentFlag.AlignLeft)
+                    fmt.setLeftMargin(0); fmt.setRightMargin(0)
+                    fmt.setCellPadding(7); fmt.setCellSpacing(0)
+                    fmt.setBorderBrush(QBrush(QColor('#34465a')))
+                    child.setFormat(fmt)
+                    for row in range(child.rows()):
+                        for column in range(child.columns()):
+                            cell = child.cellAt(row, column)
+                            cell_fmt = cell.format()
+                            cell_fmt.setBackground(QColor('#213243' if row == 0 else '#101824'))
+                            cell.setFormat(cell_fmt)
+                            cursor = cell.firstCursorPosition()
+                            end = cell.lastCursorPosition().position()
+                            while cursor.position() <= end:
+                                block_fmt = cursor.blockFormat()
+                                block_fmt.setAlignment(Qt.AlignmentFlag.AlignLeft)
+                                block_fmt.setLeftMargin(0); block_fmt.setTextIndent(0)
+                                cursor.setBlockFormat(block_fmt)
+                                if not cursor.movePosition(QTextCursor.MoveOperation.NextBlock): break
+                visit(child)
+        visit(self.document().rootFrame())
+
+    def selected_source(self):
+        selection = self.textCursor()
+        output = []
+        for position in range(selection.selectionStart(), selection.selectionEnd()):
+            cursor = QTextCursor(self.document()); cursor.setPosition(position)
+            cursor.movePosition(QTextCursor.MoveOperation.NextCharacter, QTextCursor.MoveMode.KeepAnchor)
+            text = cursor.selectedText().replace("\u2029", "\n")
+            if text == "\ufffc":
+                source = self.math_sources.get(cursor.charFormat().toImageFormat().name())
+                text = "\\(" + source + "\\)" if source else text
+            output.append(text)
+        return "".join(output)
+
+    def contextMenuEvent(self, event):
+        menu = self.createStandardContextMenu()
+        if self.allow_followup:
+            text = self.selected_source().strip()
+            menu.addSeparator()
+            action = menu.addAction("针对所选内容提问")
+            action.setEnabled(bool(text))
+            action.triggered.connect(lambda: self.followUpRequested.emit(text))
+        menu.exec(event.globalPos())
+        menu.deleteLater()
+
     def loadResource(self, resource_type, name):
-        # Model output must not read local files or fetch tracking images.
-        return None
+        # Only internally rendered math images; never external or local-file images.
+        return self.math_resources.get(name.toString()) if name is not None else None
 
     def set_markdown(self, text):
         scrollbar = self.verticalScrollBar()
         previous = scrollbar.value()
         following = previous >= scrollbar.maximum() - 20
-        self.document().setMarkdown(
-            text,
-            QTextDocument.MarkdownFeature.MarkdownDialectGitHub
-            | QTextDocument.MarkdownFeature.MarkdownNoHTML,
-        )
+        self.math_resources.clear(); self.math_sources.clear()
+        self.setHtml(markdown_html(text, self.math_resources, self.math_sources, self.viewport().width()-32))
         if self.reading_style:
             self.format_reading_text()
         scrollbar.setValue(scrollbar.maximum() if following else previous)

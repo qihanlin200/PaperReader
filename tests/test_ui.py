@@ -262,3 +262,238 @@ class StreamingUITests(unittest.TestCase):
         self.window.fit_width()
         self.assertAlmostEqual(self.window.view.scale,
             max(.5, min(4, (self.window.view.viewport().width()-28)/self.window.doc[0].rect.width)))
+
+    def test_analysis_selected_text_followup_context_and_save(self):
+        from PySide6.QtGui import QTextCursor, QContextMenuEvent
+        from PySide6.QtCore import QPoint
+        self.window.summary.set_markdown('## 核心贡献\n\n注意力建立长距离关联。')
+        cursor = self.window.summary.textCursor()
+        cursor.select(QTextCursor.SelectionType.Document)
+        self.window.summary.setTextCursor(cursor)
+        menu = self.window.summary.createStandardContextMenu()
+        def execute(position):
+            action = next(a for a in menu.actions() if a.text() == '针对所选内容提问')
+            self.assertTrue(action.isEnabled()); action.trigger()
+        with patch.object(self.window.summary, 'createStandardContextMenu', return_value=menu), patch.object(menu, 'exec', side_effect=execute):
+            self.window.summary.contextMenuEvent(QContextMenuEvent(QContextMenuEvent.Reason.Mouse, QPoint(1,1)))
+        self.assertIn('来源：AI 分析', self.window.quote)
+        self.assertIn('注意力建立长距离关联', self.window.quote)
+        self.assertNotIn('第 1 页', self.window.quote)
+        def model(config, key, messages, on_chunk=None):
+            self.assertIn('来源：AI 分析', messages[-1]['content'])
+            return self.model(config, key, messages, on_chunk)
+        self.window.question.setPlainText('为什么？')
+        with patch('paperreader.ui.window.complete', side_effect=model):
+            self.window.ask(); self.wait()
+        self.assertIn('来源：AI 分析', self.library.all()[0]['messages'][0]['content'])
+        self.assertEqual(self.window.quote, '')
+
+
+    def test_inline_quote_close_preserves_question_and_history(self):
+        from PySide6.QtTest import QTest
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QPushButton
+        self.window.show()
+        self.window.ask_about_analysis('引用分析段落')
+        self.window.question.setPlainText('保留我的问题')
+        history = list(self.window.paper['messages'])
+        self.assertFalse(self.window.quote_box.isHidden())
+        self.assertEqual(self.window.clear_quote_button.width(), 24)
+        QTest.mouseClick(self.window.clear_quote_button, Qt.MouseButton.LeftButton)
+        self.assertEqual(self.window.quote, '')
+        self.assertTrue(self.window.quote_box.isHidden())
+        self.assertEqual(self.window.question.toPlainText(), '保留我的问题')
+        self.assertEqual(self.window.paper['messages'], history)
+        self.assertFalse(any(b.text() == '清除选区引用' for b in self.window.findChildren(QPushButton)))
+
+
+    def test_question_is_plain_multiline_input(self):
+        from PySide6.QtWidgets import QTextEdit, QTabWidget
+        self.assertIsInstance(self.window.question, QTextEdit)
+        self.assertFalse(self.window.question.acceptRichText())
+        self.assertFalse(self.window.question.findChildren(QTabWidget))
+        self.window.question.setPlainText('第一行\n第二行')
+        self.assertEqual(self.window.question.toPlainText(), '第一行\n第二行')
+
+    def test_model_switch_persistence_and_inset_controls(self):
+        from paperreader.services.profiles import new_profile
+        self.window.show(); self.app.processEvents()
+        second = new_profile(); second.update(name='备用服务', model='second-model')
+        self.window.profile_config['profiles'].append(second); self.window.refresh_models()
+        self.window.model_selector.setCurrentIndex(1)
+        self.assertEqual(self.window.config['model'], 'second-model')
+        self.assertEqual(self.library.config()['active_id'], second['id'])
+        self.assertIs(self.window.send_button.parent(), self.window.question.footer)
+        self.assertIs(self.window.model_selector.parent(), self.window.question.footer)
+        self.assertGreaterEqual(self.window.question.footer.y(), 0)
+
+    def test_settings_add_and_save_multiple_profiles(self):
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton, QDialogButtonBox
+        from paperreader.ui.window import SettingsDialog
+        saved_keys = {}
+        errors = []
+        def edit():
+            try:
+                dialog = next(d for d in self.window.findChildren(SettingsDialog) if d.isVisible())
+                next(b for b in dialog.findChildren(QPushButton) if b.text() == '新增配置').click()
+                dialog.findChild(QLineEdit, 'ModelEndpoint').setText('https://example.org/v1')
+                dialog.findChild(QLineEdit, 'ModelName').setText('new-model')
+                dialog.findChild(QLineEdit, 'ModelKey').setText('new-secret')
+                dialog.findChild(QLineEdit, 'ProfileName').setText('备用模型')
+                dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Save).click()
+            except Exception as exc:
+                errors.append(exc)
+                for dialog in self.window.findChildren(SettingsDialog): dialog.reject()
+        with patch('paperreader.ui.window.keyring.set_password', side_effect=lambda service, account, secret: saved_keys.update({account: secret})):
+            QTimer.singleShot(0, edit); self.window.settings()
+        self.assertFalse(errors, str(errors))
+        config = self.library.config()
+        self.assertEqual(len(config['profiles']), 2)
+        self.assertEqual(self.window.config['model'], 'new-model')
+        self.assertEqual(saved_keys[self.window.config['key_account']], 'new-secret')
+        self.assertNotIn('new-secret', str(config))
+
+    def test_sessions_preserve_history_and_isolate_context(self):
+        from paperreader.services.sessions import ensure_sessions
+        paper = self.window.paper
+        original = ensure_sessions(paper)['id']
+        self.window.question.setPlainText('First question')
+        with patch('paperreader.ui.window.complete', side_effect=self.model):
+            self.window.ask(); self.wait()
+        self.window.new_session()
+        self.assertEqual(paper['messages'], [])
+        second = paper['active_session']
+        self.assertNotEqual(original, second)
+        self.window.question.setPlainText('Second question')
+        def model(config, key, messages, on_chunk=None):
+            self.assertFalse(any('First question' in m['content'] for m in messages))
+            return self.model(config, key, messages, on_chunk)
+        with patch('paperreader.ui.window.complete', side_effect=model):
+            self.window.ask(); self.wait()
+        self.window.switch_session(original)
+        self.assertEqual(paper['messages'][0]['question'], 'First question')
+        self.assertEqual(len(self.library.all()[0]['sessions']), 2)
+        self.assertEqual(self.window.question_navigation.items, ['First question'])
+
+    def test_question_markers_overflow_and_navigation(self):
+        from PySide6.QtCore import QPointF, QPoint, Qt
+        from PySide6.QtGui import QWheelEvent
+        nav = self.window.question_navigation
+        self.window.show()
+        nav.update_questions([f'Question {i}' for i in range(50)])
+        self.app.processEvents()
+        self.assertGreater(nav.horizontalScrollBar().maximum(), 0)
+        nav.choose(45)
+        self.assertEqual(nav.current, 45)
+        self.assertGreater(nav.horizontalScrollBar().value(), 0)
+        nav.horizontalScrollBar().setValue(0)
+        event = QWheelEvent(QPointF(10,10), QPointF(10,10), QPoint(-80,0), QPoint(),
+                            Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.ScrollUpdate, False)
+        nav.wheelEvent(event)
+        self.assertGreater(nav.horizontalScrollBar().value(), 0)
+
+
+    def test_role_labels_stay_left_after_indented_markdown(self):
+        self.window.paper['messages'] = [
+            {'role': 'user', 'content': '> 引用\n\n- 列表'},
+            {'role': 'assistant', 'content': '## 回答\n\n正文'},
+            {'role': 'user', 'content': '继续提问'}]
+        from paperreader.services.sessions import ensure_sessions
+        session = ensure_sessions(self.window.paper)
+        session['messages'] = self.window.paper['messages'] = [
+            {'role': 'user', 'content': '> 引用\n\n- 列表'},
+            {'role': 'assistant', 'content': '## 回答\n\n正文'},
+            {'role': 'user', 'content': '继续提问'}]
+        self.window.render_chat()
+        from PySide6.QtCore import Qt
+        block = self.window.chat.document().begin()
+        labels = []
+        while block.isValid():
+            if block.text() in ('你', '蛤蟆丸'):
+                fmt = block.blockFormat()
+                self.assertTrue(fmt.alignment() & Qt.AlignmentFlag.AlignLeft)
+                self.assertEqual(fmt.leftMargin(), 0)
+                self.assertEqual(fmt.indent(), 0)
+                self.assertEqual(fmt.textIndent(), 0)
+                labels.append(block.text())
+            block = block.next()
+        self.assertEqual(labels, ['你', '蛤蟆丸', '你'])
+
+    def test_add_qa_to_notes_keeps_markdown_and_unsaved_notes(self):
+        from PySide6.QtCore import QUrl
+        from paperreader.services.sessions import ensure_sessions
+        session = ensure_sessions(self.window.paper)
+        prompt = '引用选区：原文\n\n**为什么？**'
+        answer = '## 解释\n\n- 要点\n\n```python\nprint(1)\n```\n\n\\(x_i^2\\)'
+        session['messages'] += [{'role':'user','content':prompt}, {'role':'assistant','content':answer}]
+        self.window.notes.setPlainText('还未自动保存的笔记')
+        self.window.render_chat()
+        url = QUrl(f"paperreader-note://add?paper={self.window.paper['id']}&session={session['id']}&message=1")
+        self.window.add_answer_to_notes(url)
+        saved = self.library.all()[0]['notes']
+        self.assertTrue(saved.startswith('还未自动保存的笔记'))
+        self.assertIn(prompt, saved); self.assertIn(answer, saved)
+        self.assertEqual(self.window.notes.toPlainText(), saved)
+        self.window.add_answer_to_notes(url)
+        self.assertTrue(self.window.notes.toPlainText().startswith(saved))
+        self.assertEqual(self.window.notes.toPlainText().count(answer), 2)
+        self.assertNotIn("noted_answers", session)
+
+
+    def test_top_note_action_uses_selected_question_and_separator(self):
+        from paperreader.services.sessions import ensure_sessions
+        session = ensure_sessions(self.window.paper)
+        session['messages'] += [
+            {'role': 'user', 'content': 'question one'}, {'role': 'assistant', 'content': '**answer one**'},
+            {'role': 'user', 'content': 'question two'}, {'role': 'assistant', 'content': 'answer two'}]
+        self.window.notes.setPlainText('existing notes')
+        self.window.render_chat()
+        self.window.question_navigation.choose(0)
+        from PySide6.QtWidgets import QMenu
+        from PySide6.QtCore import QPoint
+        from unittest.mock import MagicMock
+        from PySide6.QtGui import QAction
+        menu = MagicMock(); action = QAction('添加到笔记', self.window)
+        menu.addAction.return_value = action
+        menu.exec.side_effect = lambda position: action.trigger()
+        with patch('paperreader.ui.window.QMenu', return_value=menu):
+            self.window.question_context_menu(0, QPoint(10,10))
+        notes = self.window.notes.toPlainText()
+        self.assertIn('existing notes\n\n---\n\n', notes)
+        self.assertIn('question one', notes); self.assertIn('**answer one**', notes)
+        self.assertNotIn('question two', notes)
+        self.assertNotIn("noted_answers", session)
+        self.assertNotIn('加入笔记', self.window.chat.toPlainText())
+        self.window.question_navigation.choose(1)
+        self.assertNotIn("noted_answers", session)
+
+
+    def test_batch_pdf_import_partial_failure(self):
+        from pathlib import Path
+        source = Path(self.temp.name)/'source.pdf'
+        doc = fitz.open(); doc.new_page().insert_text((72,72), 'Batch paper'); source.write_bytes(doc.tobytes()); doc.close()
+        invalid = Path(self.temp.name)/'broken.pdf'; invalid.write_text('not PDF')
+        with patch('paperreader.ui.window.QFileDialog.getOpenFileNames', return_value=([str(source), str(invalid)], '')):
+            self.window.import_file()
+        self.assertEqual(len(self.library.all()), 2)
+        self.assertTrue(self.errors)
+
+    def test_purge_current_paper_clears_ui_and_cannot_resurrect(self):
+        from unittest.mock import MagicMock
+        from PySide6.QtWidgets import QMessageBox
+        paper = self.window.paper
+        self.window.notes.setPlainText('pending note')
+        dialog = MagicMock(); dialog.findChild.return_value = None
+        from PySide6.QtWidgets import QPushButton
+        cancel, hide, purge = QPushButton(), QPushButton(), QPushButton()
+        dialog.addButton.side_effect = [cancel, hide, purge]
+        dialog.clickedButton.return_value = purge
+        with patch('paperreader.ui.window.QMessageBox', dialog_factory := MagicMock(return_value=dialog)):
+            dialog_factory.ButtonRole = QMessageBox.ButtonRole
+            self.window.remove_paper(paper)
+        self.assertIsNone(self.window.paper)
+        self.assertEqual(self.library.all(include_removed=True), [])
+        self.assertFalse(self.library.pdf_path(paper).exists())
+        self.window.save_notes(); self.window.persist()
+        self.assertEqual(self.library.all(include_removed=True), [])

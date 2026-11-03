@@ -16,6 +16,7 @@
 | platformdirs >=4,<5 | 跨平台本地应用数据目录 |
 | keyring >=25,<26 | 系统密钥库保存 API Key |
 | psutil >=6,<8 | 精确识别本工程实例、终止并等待旧进程退出 |
+| matplotlib >=3.8,<4 | MathText 本地数学公式渲染，无需 LaTeX 程序或联网 |
 
 sqlite3、json、unittest 等使用 Python 标准库。PyMuPDF 存在 AGPL/商业许可选项，若未来分发产品，应确认适用许可。
 
@@ -48,3 +49,7 @@ py -3 -m venv .venv
 - API 失败：地址需要是 API 基础地址，而非网页聊天地址或完整 `/chat/completions` 路径。
 
 当前使用版本范围而非跨平台统一锁文件；不同 Python 版本可能解析出不同的兼容版本。发布前需在两端固定并验证依赖版本。
+
+## 更新已有环境
+
+新增的 `matplotlib>=3.8,<4` 已统一纳入 requirements.txt，两个安装脚本均自动安装，无需单独执行 pip install matplotlib。其 NumPy、Pillow 等间接依赖由 pip 自动解析安装。旧环境重新运行 install.command 或 install.bat 即可补齐，脚本随后执行 pip check 验证依赖兼容性。这里只提供联网一键安装，不是离线依赖包。

@@ -6,6 +6,8 @@ if errorlevel 1 goto fail
 if errorlevel 1 goto fail
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 if errorlevel 1 goto fail
+.venv\Scripts\python.exe -m pip check
+if errorlevel 1 goto fail
 echo Installation complete. Run run.bat
 pause
 exit /b 0

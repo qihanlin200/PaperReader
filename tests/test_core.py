@@ -69,4 +69,24 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(chunks, ["partial"])
 
 
+    def test_soft_remove_restore_and_permanent_delete(self):
+        with tempfile.TemporaryDirectory() as root:
+            doc = fitz.open(); doc.new_page().insert_text((72,72), 'Title')
+            data = doc.tobytes(); doc.close()
+            lib = Library(root); paper = lib.import_pdf(data, 'test')
+            paper.update(notes='notes', summary='analysis', messages=[{'role':'user','content':'question'}], marks=[{'comment':'note'}])
+            lib.save(paper); path = lib.pdf_path(paper)
+            lib.remove(paper)
+            self.assertEqual(lib.all(), [])
+            self.assertTrue(path.exists())
+            restored = lib.import_pdf(data, 'again')
+            self.assertEqual(restored['notes'], 'notes')
+            self.assertEqual(len(lib.all()), 1)
+            lib.remove(restored, permanent=True)
+            self.assertEqual(lib.all(include_removed=True), [])
+            self.assertFalse(path.exists())
+            self.assertEqual(lib.import_pdf(data, 'new')['notes'], '')
+            lib.db.close()
+
+
 if __name__ == "__main__": unittest.main()

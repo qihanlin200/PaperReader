@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 from PySide6.QtCore import QLockFile, QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtGui import QIcon
 from platformdirs import user_data_dir
 from paperreader.services.instance import restart_previous
 from paperreader.ui.window import Window
@@ -11,6 +12,8 @@ from paperreader.ui.window import Window
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("PaperReader")
+    icon_path = Path(__file__).resolve().parent / "assets" / "icon-1024.png"
+    app.setWindowIcon(QIcon(str(icon_path)))
     root = Path(user_data_dir("PaperReader", appauthor=False))
     root.mkdir(parents=True, exist_ok=True)
     # Serialize startup across double-clicks. A second simultaneous launch is ignored.

@@ -208,6 +208,12 @@ class ContinuousPDF(QScrollArea):
         self.settle_timer.timeout.connect(self.scrolled)
         self.resizing_pages = False
 
+    def clear_document(self):
+        self.render_timer.stop(); self.zoom_timer.stop(); self.settle_timer.stop()
+        self.queue = []; self.pending_zoom = 1.0
+        self.pages = []; self.offsets = []; self.current = -1; self.doc = None; self.marks = []
+        self.setWidget(QWidget())
+
     def load(self, doc, page=0):
         if doc is not self.doc:
             self.zoom_timer.stop(); self.settle_timer.stop(); self.pending_zoom = 1.0
