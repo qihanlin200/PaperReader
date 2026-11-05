@@ -1,7 +1,7 @@
 import json
 import re
 from urllib.parse import urlparse
-import httpx
+from paperreader.services.lazy import httpx
 from .analysis import input_limit, message_length
 
 

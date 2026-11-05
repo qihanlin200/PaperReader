@@ -5,6 +5,8 @@ import io
 import os
 import tempfile
 import re
+import sys
+from pathlib import Path
 from functools import lru_cache
 from PySide6.QtGui import QImage, QTextDocument
 
@@ -14,6 +16,17 @@ TOKENS = re.compile(r'(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`)|\\\[([\s\S]*?)\\
 
 @lru_cache(maxsize=256)
 def render_formula(source):
+    if 'matplotlib' not in sys.modules and getattr(sys, 'frozen', False):
+        # PyInstaller assigns a fresh temporary font cache on every launch.
+        # This app uses a stable app bundle, so reuse a cache keyed to its location.
+        from platformdirs import user_cache_dir
+        bundle = hashlib.sha256(str(sys._MEIPASS).encode()).hexdigest()[:16]
+        cache = Path(user_cache_dir('PaperReader', appauthor=False)) / ('math-' + bundle)
+        try:
+            cache.mkdir(parents=True, exist_ok=True)
+            os.environ['MPLCONFIGDIR'] = str(cache)
+        except OSError:
+            pass
     os.environ.setdefault("MPLCONFIGDIR", os.path.join(tempfile.gettempdir(), "paperreader-matplotlib"))
     from matplotlib import rc_context
     from matplotlib.mathtext import math_to_image
@@ -30,7 +43,7 @@ def render_formula(source):
     return image
 
 
-def markdown_html(text, resources, sources, width=600):
+def markdown_html(text, resources, sources, width=600, renderer=render_formula):
     replacements = {}
     def convert(match):
         if match.group(1): return match.group(0)
@@ -38,7 +51,7 @@ def markdown_html(text, resources, sources, width=600):
         # Do not mistake two dollar amounts for a formula.
         if len(source) > 3000 or re.fullmatch(r'[\d.,]+(?:\s+[^\\{}_^=]+)?', source.strip()):
             return match.group(0)
-        try: image = render_formula(source)
+        try: image = renderer(source)
         except Exception: return match.group(0)
         digest = hashlib.sha256(source.encode()).hexdigest()
         url = 'paperreader-math:' + digest

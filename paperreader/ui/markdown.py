@@ -1,27 +1,47 @@
 """Markdown display for untrusted model output, without HTML or image loading."""
-from PySide6.QtCore import Signal, Qt
+from PySide6.QtCore import Signal, Qt, QObject
+from concurrent.futures import ThreadPoolExecutor
 from PySide6.QtGui import QTextDocument, QTextCursor, QTextBlockFormat, QTextCharFormat, QTextFormat, QTextTable, QColor, QBrush
 from PySide6.QtWidgets import QTextBrowser
 from paperreader.ui.theme import DOCUMENT_CSS
-from paperreader.ui.math_render import markdown_html
+from paperreader.ui.math_render import markdown_html, render_formula
+
+# MathText imports/font discovery and rasterization must not block Qt's event loop.
+# One worker also serializes matplotlib's process-wide rendering state.
+_math_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='paperreader-math')
+
+
+class MathResult(QObject):
+    ready = Signal(object)
 
 
 class MarkdownBrowser(QTextBrowser):
     followUpRequested = Signal(str)
+    mathUpdated = Signal()
 
     def __init__(self, parent=None, reading_style=False, allow_followup=False):
         super().__init__(parent)
         self.math_resources = {}
         self.math_sources = {}
+        self._status_html = ''
+        self._body_html = ''
         self.reading_style = reading_style
         self.allow_followup = allow_followup
+        self.async_math = False
+        self.external_math = False
+        self._formula_images = {}
+        self._math_running = False
+        self._markdown_text = ''
+        self._math_result = MathResult(self)
+        self._math_result.ready.connect(self._math_ready)
         self.document().setDefaultStyleSheet(DOCUMENT_CSS)
         self.document().setDocumentMargin(10)
         self.setOpenExternalLinks(False)
         self.setOpenLinks(False)
 
     def setHtml(self, text):
-        super().setHtml(text)
+        self._body_html = text
+        super().setHtml(self._status_html + text)
         def visit(frame):
             for child in frame.childFrames():
                 if isinstance(child, QTextTable):
@@ -47,6 +67,16 @@ class MarkdownBrowser(QTextBrowser):
                                 if not cursor.movePosition(QTextCursor.MoveOperation.NextBlock): break
                 visit(child)
         visit(self.document().rootFrame())
+
+    def set_status_html(self, html):
+        if html == self._status_html: return
+        scrollbar = self.verticalScrollBar()
+        position = scrollbar.value()
+        following = position >= scrollbar.maximum() - 20
+        self._status_html = html
+        self.setHtml(self._body_html)
+        if self.reading_style: self.format_reading_text()
+        scrollbar.setValue(scrollbar.maximum() if following else position)
 
     def selected_source(self):
         selection = self.textCursor()
@@ -77,14 +107,47 @@ class MarkdownBrowser(QTextBrowser):
         return self.math_resources.get(name.toString()) if name is not None else None
 
     def set_markdown(self, text):
+        self._markdown_text = text
         scrollbar = self.verticalScrollBar()
         previous = scrollbar.value()
         following = previous >= scrollbar.maximum() - 20
         self.math_resources.clear(); self.math_sources.clear()
-        self.setHtml(markdown_html(text, self.math_resources, self.math_sources, self.viewport().width()-32))
+        self.setHtml(self.html_fragment(text))
         if self.reading_style:
             self.format_reading_text()
         scrollbar.setValue(scrollbar.maximum() if following else previous)
+
+    def html_fragment(self, text):
+        pending = set()
+        def cached_formula(source):
+            if source not in self._formula_images:
+                pending.add(source)
+                raise LookupError(source)
+            image = self._formula_images[source]
+            if image is None: raise ValueError(source)
+            return image
+        result = markdown_html(text, self.math_resources, self.math_sources, self.viewport().width()-32,
+                               renderer=cached_formula if self.async_math else render_formula)
+        if pending and not self._math_running:
+            self._math_running = True
+            signal = self._math_result
+            def work():
+                images = {}
+                for source in pending:
+                    try: images[source] = render_formula(source)
+                    except Exception: images[source] = None
+                try: signal.ready.emit(images)
+                except RuntimeError: pass  # The window may have been closed.
+            _math_executor.submit(work)
+        return result
+
+    def _math_ready(self, images):
+        self._math_running = False
+        self._formula_images.update(images)
+        # Bound retained images while keeping the current batch available.
+        if len(self._formula_images) > 512: self._formula_images = dict(images)
+        if self.external_math: self.mathUpdated.emit()
+        else: self.set_markdown(self._markdown_text)
 
 
     def format_reading_text(self):

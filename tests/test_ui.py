@@ -75,6 +75,118 @@ class StreamingUITests(unittest.TestCase):
         self.assertIn('生成中断', answer)
         self.assertTrue(self.errors)
         self.assertEqual(self.window.question.toPlainText(), 'question')
+        self.assertTrue(self.window.chat_status.toggle.isChecked())
+        self.assertFalse(self.window.chat_status.timer.isActive())
+
+    def test_submitted_question_clears_immediately_and_status_collapses(self):
+        import threading
+        release = threading.Event()
+        def delayed(config, key, messages, on_chunk=None):
+            release.wait(3)
+            on_chunk('Answer')
+            return 'Answer'
+        try:
+            with patch('paperreader.ui.window.complete', side_effect=delayed):
+                self.window.question.setPlainText('First question')
+                self.window.ask()
+                self.assertEqual(self.window.question.toPlainText(), '')
+                status = self.window.chat_status
+                self.assertTrue(status.toggle.isChecked())
+                self.assertTrue(status.timer.isActive())
+                self.assertIn('等待模型响应', status.toggle.text())
+                self.assertIn('正在调用模型，等待首段内容', self.window.chat.toPlainText())
+                self.assertTrue(status.isHidden())
+                self.window.question.setPlainText('Next question draft')
+                release.set(); self.wait()
+                self.assertEqual(self.window.question.toPlainText(), 'Next question draft')
+                self.assertFalse(status.toggle.isChecked())
+                self.assertFalse(status.timer.isActive())
+                self.assertIn('已完成', status.toggle.text())
+                self.assertIn('已完成', self.window.chat.toPlainText())
+                self.assertNotIn('正在调用模型，等待首段内容', self.window.chat.toPlainText())
+                self.assertIn('已收到模型内容', status.log.toPlainText())
+                from PySide6.QtCore import QUrl
+                self.window.chat.anchorClicked.emit(QUrl('paperreader-status:toggle'))
+                self.assertTrue(status.toggle.isChecked())
+                self.assertIn('正在调用模型，等待首段内容', self.window.chat.toPlainText())
+        finally: release.set()
+
+    def test_request_status_isolated_while_switching_papers_and_sessions(self):
+        import threading
+        release = threading.Event()
+        def delayed(config, key, messages, on_chunk=None):
+            release.wait(3)
+            on_chunk('Only first paper answer')
+            return 'Only first paper answer'
+        doc = fitz.open(); doc.new_page().insert_text((72, 72), 'Different paper')
+        other = self.library.import_pdf(doc.tobytes(), 'Other'); doc.close()
+        first_id = self.window.paper['id']
+        first_session = self.window.paper['active_session']
+        try:
+            with patch('paperreader.ui.window.complete', side_effect=delayed):
+                self.window.question.setPlainText('First paper question')
+                self.window.ask()
+                self.assertIn('等待模型响应', self.window.chat.toPlainText())
+                self.window.reload(other['id'])
+                self.assertEqual(self.window.chat._status_html, '')
+                self.window.chat_status.tick()
+                self.assertEqual(self.window.chat._status_html, '')
+                release.set(); self.wait()
+                self.assertEqual(self.window.chat._status_html, '')
+                self.assertNotIn('Only first paper answer', self.window.chat.toPlainText())
+                self.window.reload(first_id)
+                self.assertIn('已完成', self.window.chat.toPlainText())
+                self.assertIn('Only first paper answer', self.window.chat.toPlainText())
+                self.window.new_session()
+                self.assertEqual(self.window.chat._status_html, '')
+                self.window.switch_session(first_session)
+                self.assertIn('已完成', self.window.chat.toPlainText())
+        finally: release.set()
+
+    def test_analysis_status_isolated_by_paper_and_mode(self):
+        with patch('paperreader.ui.window.complete', side_effect=self.model):
+            self.window.analyze(); self.wait()
+        self.assertIn('已完成', self.window.summary.toPlainText())
+        self.window.analysis_mode.setCurrentIndex(1)
+        self.assertEqual(self.window.summary._status_html, '')
+        self.window.analysis_mode.setCurrentIndex(0)
+        self.assertIn('已完成', self.window.summary.toPlainText())
+        doc = fitz.open(); doc.new_page().insert_text((72, 72), 'Another analysis paper')
+        other = self.library.import_pdf(doc.tobytes(), 'Other'); doc.close()
+        first_id = self.window.paper['id']
+        self.window.reload(other['id'])
+        self.assertEqual(self.window.summary._status_html, '')
+        self.window.reload(first_id)
+        self.assertIn('已完成', self.window.summary.toPlainText())
+
+    def test_title_double_click_opens_and_context_menu_renames_in_wide_dialog(self):
+        from PySide6.QtWidgets import QInputDialog, QMenu
+        item = self.window.list.currentItem()
+        with patch('paperreader.ui.window.QInputDialog.getText') as old_dialog:
+            self.window.list.itemDoubleClicked.emit(item)
+            old_dialog.assert_not_called()
+        self.assertEqual(self.window.paper['id'], self.paper['id'])
+        self.window.notes.setPlainText('Keep notes'); self.window.save_notes()
+        renamed = 'A longer renamed paper title'
+        def edit(dialog):
+            self.assertGreaterEqual(dialog.minimumWidth(), 760)
+            self.assertEqual(dialog.textValue(), self.window.paper['title'])
+            dialog.setTextValue(renamed)
+            return 1
+        from unittest.mock import MagicMock
+        from PySide6.QtGui import QAction
+        menu = MagicMock()
+        rename = QAction('修改论文标题…', self.window)
+        remove = QAction('移除论文…', self.window)
+        menu.addAction.side_effect = [rename, remove]
+        menu.exec.side_effect = lambda position: rename.trigger()
+        self.window.show(); self.app.processEvents()
+        with patch.object(QInputDialog, 'exec', edit), patch('paperreader.ui.window.QMenu', return_value=menu):
+            self.window.paper_context_menu(self.window.list.visualItemRect(item).center())
+        self.assertEqual(item.text(), renamed)
+        saved = self.library.get(self.paper['id'])
+        self.assertEqual(saved['title'], renamed)
+        self.assertEqual(saved['notes'], 'Keep notes')
 
 
     def test_continuous_scroll_lazy_render_and_selection_page(self):
@@ -558,3 +670,18 @@ class StreamingUITests(unittest.TestCase):
                     self.assertNotIn(excluded, text)
                     self.assertTrue(all(r[0]<300 if prefix=='LEFT' else r[0]>300 for r in rects))
         view.close(); doc.close()
+
+
+    def test_startup_only_loads_metadata_then_selected_paper(self):
+        self.window.close()
+        with patch.object(self.library, 'all', side_effect=AssertionError('Must not load all')), \
+             patch.object(self.library, 'get', wraps=self.library.get) as get_record:
+            window = Window(library=self.library)
+            self.assertEqual(window.list.count(), 1)
+            self.assertIsNone(window.paper)
+            self.assertIsNone(window.doc)
+            get_record.assert_not_called()
+            window.list.setCurrentRow(0)
+            get_record.assert_called_once_with(self.paper['id'])
+            self.assertIsNotNone(window.doc)
+            window.close()

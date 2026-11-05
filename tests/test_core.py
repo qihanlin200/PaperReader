@@ -96,4 +96,21 @@ class CoreTests(unittest.TestCase):
         self.assertIn('余额不足', api_error_message(402))
 
 
+    def test_metadata_list_never_reads_full_records_or_opens_pdf(self):
+        import sqlite3, json
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as root:
+            database = sqlite3.connect(Path(root)/'library.sqlite3')
+            database.execute('CREATE TABLE papers (id TEXT PRIMARY KEY, data TEXT NOT NULL)')
+            database.execute('INSERT INTO papers VALUES (?,?)', ('old', json.dumps(dict(id='old', title='2504.15228', notes='large note'*10000))))
+            database.commit(); database.close()
+            with patch('fitz.open', side_effect=AssertionError('Do not open PDF for list')):
+                lib = Library(root)
+                with patch('paperreader.services.library.json.loads', side_effect=AssertionError('Do not parse records for list')):
+                    metadata = lib.list_metadata()
+                self.assertEqual(metadata[0]['title'], '2504.15228')
+                self.assertNotIn('notes', metadata[0])
+            lib.db.close()
+
+
 if __name__ == "__main__": unittest.main()

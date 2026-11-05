@@ -1,7 +1,7 @@
 from pathlib import Path
 import uuid
-import fitz
-import keyring
+from paperreader.services.lazy import fitz
+from paperreader.services.lazy import keyring
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, QTimer, QUrl, QUrlQuery
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QListWidget, QSplitter, QScrollArea, QTextBrowser, QTextEdit, QLineEdit, QLabel,
@@ -15,6 +15,7 @@ from paperreader.ui.splitter import PaneSplitter
 from paperreader.ui.theme import apply_theme
 from paperreader.ui.composer import QuestionEdit
 from paperreader.ui.questions import QuestionNavigation
+from paperreader.ui.request_status import RequestStatus
 from paperreader.ui.math_render import markdown_html
 from paperreader.services.sessions import ensure_sessions, create_session
 from paperreader.services.persona import ASSISTANT_NAME, with_persona
@@ -101,7 +102,7 @@ class Window(QMainWindow):
         self.list = QListWidget(); self.list.setObjectName("PaperList")
         self.list.setWordWrap(False); self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.list.setTextElideMode(Qt.TextElideMode.ElideRight); self.list.currentRowChanged.connect(self.open_paper);
-        self.list.itemDoubleClicked.connect(self.rename_paper);
+        self.list.itemDoubleClicked.connect(lambda item: self.open_paper(self.list.row(item)))
         self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self.paper_context_menu); ll.addWidget(self.list, 1)
         badge = QLabel("●  学习记录保存在本机"); badge.setObjectName("LocalBadge"); ll.addWidget(badge)
@@ -130,7 +131,9 @@ class Window(QMainWindow):
         row.addWidget(self.analysis_mode)
         row.addWidget(button("生成", self.analyze, "Quiet")); wl.addWidget(head)
         tabs = QTabWidget(); self.summary = MarkdownBrowser(reading_style=True, allow_followup=True);
-        self.summary.followUpRequested.connect(self.ask_about_analysis); tabs.addTab(self.summary, "AI 分析")
+        self.summary.followUpRequested.connect(self.ask_about_analysis)
+        self.analysis_status = RequestStatus(); self.analysis_status.attach(self.summary)
+        tabs.addTab(self.summary, "AI 分析")
         self.notes = MarkdownEditor("记录你的理解与思考，支持 Markdown…"); tabs.addTab(self.notes, "笔记")
         marks_widget = QWidget(); ml = QVBoxLayout(marks_widget); ml.setContentsMargins(10, 10, 10, 10)
         self.marks = QListWidget(); ml.addWidget(self.marks)
@@ -154,6 +157,7 @@ class Window(QMainWindow):
         self.history_button = button("历史", self.session_history); chat_header.addWidget(self.history_button)
         cl.addWidget(head)
         self.chat = MarkdownBrowser(); cl.addWidget(self.chat, 1)
+        self.chat_status = RequestStatus(); self.chat_status.attach(self.chat)
         quote_box = QWidget(); self.quote_box = quote_box; ql = QVBoxLayout(quote_box); ql.setContentsMargins(0, 8, 0, 0); ql.setSpacing(4)
         quote_card = QWidget(); quote_card.setObjectName("QuoteCard")
         card_layout = QVBoxLayout(quote_card); card_layout.setContentsMargins(10, 7, 8, 6); card_layout.setSpacing(0)
@@ -192,6 +196,9 @@ class Window(QMainWindow):
         self.notes.textChanged.connect(lambda: self.timer.start())
         self.position_timer = QTimer(self); self.position_timer.setSingleShot(True)
         self.position_timer.setInterval(600); self.position_timer.timeout.connect(self.persist)
+        for browser in self.findChildren(MarkdownBrowser): browser.async_math = True
+        self.chat.external_math = True
+        self.chat.mathUpdated.connect(self.render_chat)
         self.reload()
         self.statusBar().showMessage("学习记录仅保存在本机；AI 操作会将必要文本发送到配置的模型 API。")
 
@@ -223,7 +230,7 @@ class Window(QMainWindow):
 
     def reload(self, identifier=None):
         if hasattr(self, "timer"): self.save_notes()
-        self.papers = self.library.all(); self.list.blockSignals(True); self.list.clear()
+        self.papers = self.library.list_metadata(); self.list.blockSignals(True); self.list.clear()
         for paper in self.papers:
             source = "arXiv" if "arxiv.org" in paper.get("source", "") else ("网站 PDF" if paper.get("source") else "本地 PDF")
             item = QListWidgetItem(" ".join(paper["title"].split()))
@@ -237,6 +244,9 @@ class Window(QMainWindow):
         if item is None: return
         paper = self.papers[self.list.row(item)]
         menu = QMenu(self)
+        rename = menu.addAction("修改论文标题…")
+        rename.triggered.connect(lambda: self.rename_paper(item))
+        menu.addSeparator()
         action = menu.addAction("移除论文…")
         action.triggered.connect(lambda: self.remove_paper(paper))
         menu.exec(self.list.viewport().mapToGlobal(position))
@@ -244,6 +254,7 @@ class Window(QMainWindow):
     def remove_paper(self, paper):
         if self.busy:
             self.error("请等待后台任务完成后移除论文。"); return
+        paper = self.paper if self.paper and self.paper["id"] == paper["id"] else self.library.get(paper["id"])
         dialog = QMessageBox(self)
         dialog.setWindowTitle("移除论文")
         from html import escape
@@ -279,6 +290,7 @@ class Window(QMainWindow):
             self.view.clear_document()
             if self.doc: self.doc.close()
             self.doc = None; self.paper = None
+            self.analysis_status.set_context(None); self.chat_status.set_context(None)
             self.notes.blockSignals(True); self.notes.clear(); self.notes.blockSignals(False)
             self.summary.set_markdown(""); self.chat.set_markdown("")
             self.marks.clear(); self.mark_preview.clear(); self.question.clear(); self.clear_quote()
@@ -291,6 +303,7 @@ class Window(QMainWindow):
             if draft == identifier or draft.startswith(identifier+":"): self.summary_drafts.pop(draft, None)
         self.chat_drafts.pop(identifier, None)
         if permanent:
+            self.analysis_status.discard_paper(identifier); self.chat_status.discard_paper(identifier)
             from paperreader.ui.math_render import render_formula
             render_formula.cache_clear()
             for browser in (self.summary, self.chat, self.quote_label, self.mark_preview, self.notes.preview):
@@ -303,12 +316,22 @@ class Window(QMainWindow):
     def rename_paper(self, item):
         row = self.list.row(item)
         if row < 0: return
-        paper = self.papers[row]
-        title, ok = QInputDialog.getText(self, "修改论文标题", "论文标题：", text=paper["title"])
-        if ok and title.strip():
+        metadata = self.papers[row]
+        paper = self.paper if self.paper and self.paper["id"] == metadata["id"] else self.library.get(metadata["id"])
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle("修改论文标题")
+        dialog.setInputMode(QInputDialog.InputMode.TextInput)
+        dialog.setLabelText("论文标题：")
+        dialog.setTextValue(paper['title'])
+        dialog.setOkButtonText("保存"); dialog.setCancelButtonText("取消")
+        dialog.setMinimumWidth(760); dialog.resize(860, 200)
+        if dialog.exec() and dialog.textValue().strip():
+            title = dialog.textValue()
             paper["title"] = " ".join(title.split()); self.library.save(paper)
+            metadata["title"] = paper["title"]
             item.setText(paper["title"]); item.setToolTip(paper["title"])
-            if self.paper is paper: self.current_title.setText(paper["title"])
+            if self.paper is paper:
+                self.current_title.setText(paper["title"]); self.current_title.setToolTip(paper["title"])
 
     def open_paper(self, row):
         if row < 0: return
@@ -316,7 +339,11 @@ class Window(QMainWindow):
         self.position_timer.stop()
         if self.paper: self.persist()
         if self.doc: self.doc.close()
-        self.paper = self.papers[row]
+        metadata = self.papers[row]
+        pending = getattr(self, 'inflight_paper', None)
+        self.paper = pending if self.busy and pending and pending['id'] == metadata['id'] else self.library.get(metadata['id'])
+        metadata['title'] = self.paper['title']
+        self.list.item(row).setText(self.paper['title']); self.list.item(row).setToolTip(self.paper['title'])
         ensure_sessions(self.paper)
         self.current_title.setText(self.paper["title"]); self.current_title.setToolTip(self.paper["title"])
         self.doc = fitz.open(self.library.pdf_path(self.paper))
@@ -326,10 +353,13 @@ class Window(QMainWindow):
         self.clear_quote(); self.refresh()
 
     def refresh(self):
-        if not self.paper: return
+        if not self.paper:
+            self.analysis_status.set_context(None); self.chat_status.set_context(None)
+            return
         self.view.set_marks(self.paper["marks"])
         self.page_label.setText(f"{self.page+1} / {len(self.doc)}")
         mode = self.analysis_mode.currentData()
+        self.analysis_status.set_context((self.paper['id'], mode))
         saved = self.paper.get("analyses", {}).get(mode, {}).get("text")
         if mode == "quick" and saved is None: saved = self.paper["summary"]
         self.summary.set_markdown(self.summary_drafts.get(self.paper["id"]+":"+mode) or saved or "选择模式后点击“生成”开始分析。")
@@ -384,24 +414,34 @@ class Window(QMainWindow):
         if failures: self.error(message + "\n以下文件导入失败，其余不受影响：\n" + "\n".join(failures))
         else: self.statusBar().showMessage(message)
 
-    def task(self, fn, done, on_chunk=None, on_error=None):
+    def task(self, fn, done, on_chunk=None, on_error=None, request_status=None, request_label='模型请求'):
         if self.busy:
-            self.error("已有后台任务，请等待完成。"); return
+            self.error("已有后台任务，请等待完成。"); return False
         self.busy = True; self.model_selector.setEnabled(False); self.statusBar().showMessage("正在处理，请稍候…")
+        self.inflight_paper = self.paper
+        if request_status: request_status.begin(request_label, self.config['model'])
         job = Job(fn, streaming=on_chunk is not None); self.job = job
         if on_chunk is not None: job.signals.chunk.connect(on_chunk)
         def finish(value):
             self.busy = False; self.model_selector.setEnabled(True)
-            try: done(value)
-            except Exception as exc: self.error(str(exc))
+            try:
+                done(value)
+                if request_status: request_status.finish()
+            except Exception as exc:
+                if request_status: request_status.finish(False)
+                self.error(str(exc))
+            self.inflight_paper = None
             self.statusBar().showMessage("任务完成，学习记录保存在本地")
         def fail(text):
             self.busy = False; self.model_selector.setEnabled(True); self.statusBar().showMessage("任务失败，可重试")
+            if request_status: request_status.finish(False)
             if on_error:
                 try: on_error(text)
                 except Exception as exc: text += "\n部分结果保存失败：" + str(exc)
             self.error(text)
+            self.inflight_paper = None
         job.signals.done.connect(finish); job.signals.error.connect(fail); self.pool.start(job)
+        return True
 
     def import_link(self):
         if self.busy:
@@ -534,14 +574,18 @@ class Window(QMainWindow):
         scope = "完整文本" if sum(len(t) for _, t in pages) <= available else "部分原文（按当前模型输入上限选取）"
         return scope, "".join(parts)
 
-    def ai(self, messages, done, on_chunk, on_error=None):
+    def ai(self, messages, done, on_chunk, on_error=None, request_status=None, request_label='模型请求'):
         try: key = keyring.get_password("PaperReader", self.config.get("key_account", "api")) or ""
         except Exception as exc:
             if on_error: on_error(str(exc))
-            self.error(str(exc)); return
+            self.error(str(exc)); return False
         config = dict(self.config)
         messages = with_persona(messages)
-        self.task(lambda emit: complete(config, key, messages, on_chunk=emit), done, on_chunk=on_chunk, on_error=on_error)
+        def progress(text):
+            if request_status: request_status.received(text)
+            on_chunk(text)
+        return self.task(lambda emit: complete(config, key, messages, on_chunk=emit), done,
+                         on_chunk=progress, on_error=on_error, request_status=request_status, request_label=request_label)
 
     def analyze(self):
         if not self.paper or self.busy: return
@@ -583,9 +627,12 @@ class Window(QMainWindow):
         def progress(serialized):
             event = json.loads(serialized)
             if event['kind'] == 'section':
+                self.analysis_status.stage(event['title'])
                 buffer.append('\n\n## '+event['title']+'\n\n')
                 self.statusBar().showMessage(event['title'])
-            elif event['kind'] == 'text': buffer.append(event['text'])
+            elif event['kind'] == 'text':
+                self.analysis_status.received(event['text'])
+                buffer.append(event['text'])
             elif event['kind'] == 'checkpoint': save_partial()
             self.summary_drafts[draft_key] = ''.join(buffer)
             if not render_timer.isActive(): render_timer.start()
@@ -601,7 +648,8 @@ class Window(QMainWindow):
             if len(buffer)>1: save_partial()
             self.summary_drafts.pop(draft_key,None)
             if self.paper is paper: self.refresh()
-        self.task(lambda emit: run_analysis(pages, config, key, mode, complete, emit), done, progress, failed)
+        self.task(lambda emit: run_analysis(pages, config, key, mode, complete, emit), done, progress, failed,
+                  request_status=self.analysis_status, request_label=label)
 
     def ask_about_analysis(self, text):
         if not self.paper or not text.strip(): return
@@ -645,18 +693,19 @@ class Window(QMainWindow):
             self.library.save(paper)
             self.chat_drafts.pop(paper["id"], None)
             if self.paper is paper:
-                if success and self.question.toPlainText().strip() == question:
-                    self.question.clear(); self.clear_quote()
                 self.refresh()
         def done(text):
             save_answer(text, True)
         def failed(error):
+            if self.paper is paper and not self.question.toPlainText().strip():
+                self.question.setPlainText(question)
             if chunks:
                 save_answer("**生成中断，以下为部分结果**\n\n" + "".join(chunks), False)
             else:
                 self.chat_drafts.pop(paper["id"], None)
                 if self.paper is paper: self.render_chat()
-        self.ai(messages, done, progress, failed)
+        if self.ai(messages, done, progress, failed, request_status=self.chat_status, request_label='论文追问'):
+            self.question.clear(); self.clear_quote()
 
     def jump_question(self, index):
         self.chat.scrollToAnchor(f"question-{index}")
@@ -708,8 +757,11 @@ class Window(QMainWindow):
         menu.exec(self.history_button.mapToGlobal(self.history_button.rect().bottomLeft()))
 
     def render_chat(self):
-        if not self.paper: return
-        ensure_sessions(self.paper)
+        if not self.paper:
+            self.chat_status.set_context(None)
+            return
+        session = ensure_sessions(self.paper)
+        self.chat_status.set_context((self.paper['id'], session['id']))
         questions = [m.get("question", m["content"].split("\n\n")[-1]) for m in self.paper["messages"] if m["role"] == "user"]
         entries = [(m["role"], m["content"]) for m in self.paper["messages"]]
         draft = self.chat_drafts.get(self.paper["id"])
@@ -727,7 +779,7 @@ class Window(QMainWindow):
             anchor = ""
             if role == "user":
                 anchor = f'<a name="question-{question_index}"></a>'; question_index += 1
-            body = markdown_html(content, self.chat.math_resources, self.chat.math_sources, self.chat.viewport().width()-40)
+            body = self.chat.html_fragment(content)
             label = "你" if role == "user" else ASSISTANT_NAME
             html.append(f'<p align="left" style="margin:16px 0 10px 0; text-indent:0; -qt-block-indent:0; color:#66ddda; font-size:14px; font-weight:600;">{anchor}{label}</p>' + body)
         scrollbar = self.chat.verticalScrollBar()

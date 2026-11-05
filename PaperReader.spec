@@ -3,7 +3,7 @@ from pathlib import Path
 root = Path(SPECPATH)
 a = Analysis([str(root / 'paperreader' / '__main__.py')], pathex=[str(root)],
     binaries=[], datas=[(str(root/'paperreader'/'assets'), 'paperreader/assets')],
-    hiddenimports=['keyring.backends.macOS'],
+    hiddenimports=['keyring', 'keyring.backends.macOS', 'fitz', 'httpx'],
     excludes=['PySide6.QtWebEngineCore', 'PySide6.QtWebEngineWidgets', 'PySide6.QtWebEngineQuick', 'tkinter'],
     hookspath=[], hooksconfig={'matplotlib': {'backends': ['Agg']}}, runtime_hooks=[], noarchive=False)
 pyz = PYZ(a.pure)

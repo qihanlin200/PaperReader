@@ -1,6 +1,6 @@
 """Read paper titles locally, preferring embedded PDF metadata."""
 import re
-import fitz
+from paperreader.services.lazy import fitz
 
 
 def normalize(value):

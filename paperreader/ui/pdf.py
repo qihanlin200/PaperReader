@@ -1,4 +1,4 @@
-import fitz
+from paperreader.services.lazy import fitz
 from paperreader.ui.selection import column_words
 from PySide6.QtCore import Qt, QRect, QRectF, QPoint, Signal, QEvent
 from PySide6.QtGui import QPixmap, QImage, QPainter, QColor

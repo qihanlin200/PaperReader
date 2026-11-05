@@ -8,6 +8,7 @@ import psutil
 def is_reader_process(process, project):
     try:
         if getattr(sys, "frozen", False):
+            if process.name() != Path(sys.executable).name: return False
             return process.pid != os.getpid() and Path(process.exe()).resolve() == Path(sys.executable).resolve()
         args = process.cmdline()
         # Exact module invocation, not substring searches that can match editors/tests.
