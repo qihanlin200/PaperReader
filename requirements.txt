@@ -6,3 +6,4 @@ platformdirs>=4,<5
 keyring>=25,<26
 psutil>=6,<8
 matplotlib>=3.8,<4
+Pillow>=9.3,<13

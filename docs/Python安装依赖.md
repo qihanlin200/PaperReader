@@ -17,6 +17,7 @@
 | keyring >=25,<26 | 系统密钥库保存 API Key |
 | psutil >=6,<8 | 精确识别本工程实例、终止并等待旧进程退出 |
 | matplotlib >=3.8,<4 | MathText 本地数学公式渲染，无需 LaTeX 程序或联网 |
+| Pillow >=9.3,<13 | PDF 预览配色 |
 
 sqlite3、json、unittest 等使用 Python 标准库。PyMuPDF 存在 AGPL/商业许可选项，若未来分发产品，应确认适用许可。
 
@@ -52,7 +53,7 @@ py -3 -m venv .venv
 
 ## 更新已有环境
 
-新增的 `matplotlib>=3.8,<4` 已统一纳入 requirements.txt，两个安装脚本均自动安装，无需单独执行 pip install matplotlib。其 NumPy、Pillow 等间接依赖由 pip 自动解析安装。旧环境重新运行 install.command 或 install.bat 即可补齐，脚本随后执行 pip check 验证依赖兼容性。这里只提供联网一键安装，不是离线依赖包。
+两个安装脚本均按 requirements.txt 安装 matplotlib 和 Pillow，NumPy 等间接依赖由 pip 自动解析安装。旧环境重新运行 install.command 或 install.bat 即可补齐，脚本随后执行 pip check 验证依赖兼容性。这里只提供联网一键安装，不是离线依赖包。
 
 ## 打包依赖
 

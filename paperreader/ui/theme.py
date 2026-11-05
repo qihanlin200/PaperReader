@@ -209,7 +209,7 @@ QComboBox#AnalysisMode QAbstractItemView::item { padding: 4px 8px 4px 5px; }
 QComboBox#ThemePicker { combobox-popup: 0; background: #121d2a; border-color: #2b4053; min-height: 24px; }
 QComboBox#ThemePicker:hover, QComboBox#ThemePicker:focus { border-color: #4a6379; }
 QComboBox#ThemePicker::drop-down { background: transparent; border: none; }
-QComboBox#ThemePicker QAbstractItemView { border: 1px solid #344b62; padding: 4px 0; outline: none; }
+QComboBox#ThemePicker QAbstractItemView { border: 1px solid #344b62; outline: none; }
 QComboBox#ThemePicker QAbstractItemView::item { padding: 7px 10px; min-height: 19px; }
 QComboBox#ThemePicker QAbstractItemView::item:selected { color: #8ce9e6; }
 QLineEdit, QSpinBox { background: #0c1521; border: 1px solid #34475b; border-radius: 6px; padding: 9px 11px; min-height: 22px; selection-background-color: #305663; }

@@ -1,5 +1,7 @@
 {
   "name": "加菲喵星人",
+  "pdf_paper": "#32241c",
+  "pdf_ink": "#f5e8db",
   "header_animation": "header-walk.gif",
   "assistant": {
     "name": "加菲喵",

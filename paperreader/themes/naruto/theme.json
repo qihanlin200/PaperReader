@@ -33,6 +33,8 @@
   "document_css": "document.css",
   "arrow": "arrow.svg",
   "banner": "banner.png",
+  "pdf_paper": "#30271b",
+  "pdf_ink": "#f3dfba",
   "header_animation": "header-duel.gif",
   "banner_crop": [0.21, 0.76],
   "banner_background": "#211b14",

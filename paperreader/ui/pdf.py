@@ -1,8 +1,27 @@
 from paperreader.services.lazy import fitz
 from paperreader.ui.selection import column_words
+from paperreader.services.themes import get_theme
+from paperreader.ui.theme import current_theme
 from PySide6.QtCore import Qt, QRect, QRectF, QPoint, Signal, QEvent
 from PySide6.QtGui import QPixmap, QImage, QPainter, QColor
 from PySide6.QtWidgets import QLabel, QMenu
+
+
+def themed_pdf_image(pix, theme):
+    from PIL import Image, ImageChops, ImageOps
+
+    source = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+    tinted = ImageOps.colorize(source.convert("L"), theme.pdf_ink, theme.pdf_paper)
+    red, green, blue = source.split()
+    maximum = ImageChops.lighter(ImageChops.lighter(red, green), blue)
+    minimum = ImageChops.darker(ImageChops.darker(red, green), blue)
+    # Keep saturated chart colors and blend the transition at antialiased edges.
+    chroma = ImageChops.subtract(maximum, minimum).point(
+        [min(255, max(0, (level - 8) * 6)) for level in range(256)]
+    )
+    result = Image.composite(source, tinted, chroma)
+    return QImage(result.tobytes(), pix.width, pix.height, pix.width * 3,
+                  QImage.Format.Format_RGB888).copy()
 
 
 class PageView(QLabel):
@@ -38,7 +57,11 @@ class PageView(QLabel):
         logical_area = max(1, page.rect.width * page.rect.height * self.scale**2)
         density = min(target_density, sqrt(24_000_000 / logical_area))
         pix = page.get_pixmap(matrix=fitz.Matrix(self.scale*density, self.scale*density), alpha=False)
-        image = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format.Format_RGB888).copy()
+        theme = get_theme(current_theme())
+        if (theme.pdf_paper, theme.pdf_ink) == ("#ffffff", "#000000"):
+            image = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format.Format_RGB888).copy()
+        else:
+            image = themed_pdf_image(pix, theme)
         bitmap = QPixmap.fromImage(image)
         bitmap.setDevicePixelRatio(density)
         super().clear()
@@ -292,6 +315,11 @@ class ContinuousPDF(QScrollArea):
         view.display(self.doc[index], [m for m in self.marks if m['page'] == index])
         view.anchor, view.endpoint, view.single_word = anchor, endpoint, single_word
         if self.queue: self.render_timer.start(0)
+
+    def refresh_theme(self):
+        for view in self.pages:
+            view.render_scale = None
+        self.scrolled()
 
     def set_marks(self, marks):
         self.marks = marks

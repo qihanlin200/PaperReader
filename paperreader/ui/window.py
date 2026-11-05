@@ -543,8 +543,15 @@ class Window(QMainWindow):
         appearance = QFormLayout()
         theme_picker = QComboBox()
         theme_picker.setObjectName("ThemePicker")
+        theme_view = QListView(theme_picker)
+        theme_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        theme_picker.setView(theme_view)
         for pack in THEMES.values():
             theme_picker.addItem(pack.name, pack.identifier)
+        theme_view.ensurePolished()
+        # Include the styled row padding in Qt's popup height.
+        rows_height = sum(theme_view.sizeHintForRow(i) for i in range(theme_picker.count()))
+        theme_view.setMinimumHeight(rows_height + 2 * theme_view.frameWidth())
         theme_picker.setCurrentIndex(theme_picker.findData(self.profile_config["theme"]))
         appearance.addRow("界面主题", theme_picker)
         general_layout.addLayout(appearance)
@@ -609,6 +616,7 @@ class Window(QMainWindow):
         self.profile_config["theme"] = theme
         apply_theme(theme)
         self.update_theme_art()
+        self.view.refresh_theme()
         for browser in self.findChildren(MarkdownBrowser):
             browser.refresh_theme()
         self.analysis_status.render_inline()

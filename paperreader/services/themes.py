@@ -28,6 +28,8 @@ class Theme:
     arrow: Optional[Path] = None
     banner: Optional[Path] = None
     header_animation: Optional[Path] = None
+    pdf_paper: str = "#ffffff"
+    pdf_ink: str = "#000000"
     banner_crop: tuple = (0.0, 1.0)
     banner_background: str = "#111a28"
     brand_icon: Optional[Path] = None
@@ -94,6 +96,8 @@ def _load_theme(folder):
         arrow=_asset(folder, data.get("arrow")),
         banner=_asset(folder, data.get("banner")),
         header_animation=_asset(folder, data.get("header_animation")),
+        pdf_paper=_color(data.get("pdf_paper", "#ffffff")),
+        pdf_ink=_color(data.get("pdf_ink", "#000000")),
         banner_crop=(crop_top, crop_bottom),
         banner_background=_color(data.get("banner_background", "#111a28")),
         brand_icon=_asset(folder, data.get("brand_icon")),

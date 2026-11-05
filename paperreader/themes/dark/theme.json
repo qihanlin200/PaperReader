@@ -1,5 +1,7 @@
 {
   "name": "深色主题",
+  "pdf_paper": "#101824",
+  "pdf_ink": "#e4ebf5",
   "assistant": {
     "name": "无情的阅读机器"
   }
