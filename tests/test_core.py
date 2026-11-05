@@ -89,4 +89,11 @@ class CoreTests(unittest.TestCase):
             lib.db.close()
 
 
+    def test_http_503_is_service_busy_not_credentials(self):
+        from paperreader.services.network import api_error_message
+        self.assertIn('繁忙', api_error_message(503))
+        self.assertIn('密钥无效', api_error_message(401))
+        self.assertIn('余额不足', api_error_message(402))
+
+
 if __name__ == "__main__": unittest.main()

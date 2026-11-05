@@ -9,3 +9,6 @@ __pycache__/
 *.sqlite3-*
 *.pdf
 config.json
+
+build/
+dist/

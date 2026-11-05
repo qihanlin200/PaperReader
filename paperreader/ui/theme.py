@@ -71,8 +71,12 @@ QComboBox::drop-down:hover { background: #305465; }
 QComboBox::down-arrow { image: url("__DROPDOWN_ARROW__"); width: 14px; height: 14px; }
 QComboBox:disabled { color: #7b8d9d; border-color: #2a3949; }
 QComboBox QAbstractItemView { background: #162231; color: #e4ebf5; selection-background-color: #294251; }
-QLineEdit { background: #0c1521; border: 1px solid #34475b; border-radius: 6px; padding: 9px 11px; min-height: 22px; selection-background-color: #305663; }
+QLineEdit, QSpinBox { background: #0c1521; border: 1px solid #34475b; border-radius: 6px; padding: 9px 11px; min-height: 22px; selection-background-color: #305663; }
 QWidget#QuoteCard { background: #142530; border: 1px solid #35515c; border-radius: 7px; }
+QSpinBox QLineEdit { background: transparent; border: none; padding: 0; min-height: 0; }
+QSpinBox { padding-right: 28px; min-height: 22px; max-height: 22px; }
+QSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right; width: 24px; border-left: 1px solid #34475b; }
+QSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right; width: 24px; border-left: 1px solid #34475b; }
 QTextBrowser#Quote { background: transparent; border: none; color: #afc4d5; padding: 0; }
 QPushButton#QuoteClose { background: #203b48; color: #b9d8dd; border: 1px solid #3d5e6a; border-radius: 12px; padding: 0; min-height: 0; font-size: 17px; }
 QPushButton#QuoteClose:hover { background: #365866; color: #ffffff; border-color: #66ddda; }

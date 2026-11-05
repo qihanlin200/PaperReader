@@ -2,6 +2,7 @@ import json
 import re
 from urllib.parse import urlparse
 import httpx
+from .analysis import input_limit, message_length
 
 
 def pdf_url(value):
@@ -30,7 +31,25 @@ def download(value):
     return bytes(data)
 
 
+def api_error_message(status):
+    reasons = {
+        400: "请求参数或模型名称不被服务支持，请核对模型配置。",
+        401: "API 密钥无效或已失效，请在模型设置中检查密钥。",
+        402: "模型服务账户余额不足，请检查服务商账户。",
+        403: "当前账户没有访问权限，请检查模型权限。",
+        404: "API 路径或模型不存在，请核对基础地址和模型名称。",
+        429: "请求过于频繁或额度受限，请稍后重试。",
+        500: "模型服务内部错误，请稍后重试。",
+        502: "模型服务或上游网关异常，请稍后重试。",
+        503: "模型服务暂不可用或繁忙。请稍后重试，或切换其他服务商/模型；此状态不能直接判定为密钥或余额错误。",
+        504: "模型服务或上游网关超时，请稍后重试。",
+    }
+    return f"API 请求失败（HTTP {status}）：" + reasons.get(status, "请检查服务商状态、配置及网络。")
+
+
 def complete(config, key, messages, on_chunk=None):
+    if message_length(messages) > input_limit(config):
+        raise ValueError("请求文本超过此模型的最大输入长度，请调高上限或缩短问题/选区。")
     endpoint = config["endpoint"].strip().rstrip("/")
     parsed = urlparse(endpoint)
     if parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1", "::1")):
@@ -44,7 +63,7 @@ def complete(config, key, messages, on_chunk=None):
             payload["stream"] = True
             with client.stream("POST", endpoint + "/chat/completions", headers=headers, json=payload) as response:
                 if response.is_error:
-                    raise ValueError(f"API 请求失败（HTTP {response.status_code}），请检查配置、额度及模型权限。")
+                    raise ValueError(api_error_message(response.status_code))
                 pieces = []
                 finished = False
                 for line in response.iter_lines():
@@ -76,7 +95,7 @@ def complete(config, key, messages, on_chunk=None):
         else:
             response = client.post(endpoint + "/chat/completions", headers=headers, json=payload)
             if response.is_error:
-                raise ValueError(f"API 请求失败（HTTP {response.status_code}），请检查配置、额度及模型权限。")
+                raise ValueError(api_error_message(response.status_code))
             text = response.json()["choices"][0]["message"]["content"]
     if not isinstance(text, str) or not text.strip():
         raise ValueError("模型没有返回文本。")

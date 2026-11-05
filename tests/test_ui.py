@@ -497,3 +497,17 @@ class StreamingUITests(unittest.TestCase):
         self.assertFalse(self.library.pdf_path(paper).exists())
         self.window.save_notes(); self.window.persist()
         self.assertEqual(self.library.all(include_removed=True), [])
+
+
+    def test_quick_and_deep_reports_are_separate_and_streamed(self):
+        with patch('paperreader.ui.window.complete', side_effect=self.model):
+            self.window.analyze(); self.wait()
+            self.assertTrue(self.window.paper['analyses']['quick']['complete'])
+            quick = self.window.paper['analyses']['quick']['text']
+            self.window.analysis_mode.setCurrentIndex(1)
+            self.window.analyze(); self.wait()
+        analyses = self.library.all()[0]['analyses']
+        self.assertEqual(analyses['quick']['text'], quick)
+        self.assertTrue(analyses['deep']['complete'])
+        self.assertIn('分段精读记录', analyses['deep']['text'])
+        self.assertIn('精读报告', self.window.summary.toPlainText())

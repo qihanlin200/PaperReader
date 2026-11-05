@@ -1,11 +1,14 @@
 """Restart only Python module instances belonging to this checkout."""
 import os
+import sys
 from pathlib import Path
 import psutil
 
 
 def is_reader_process(process, project):
     try:
+        if getattr(sys, "frozen", False):
+            return process.pid != os.getpid() and Path(process.exe()).resolve() == Path(sys.executable).resolve()
         args = process.cmdline()
         # Exact module invocation, not substring searches that can match editors/tests.
         module = any(args[i:i+2] == ['-m', 'paperreader'] for i in range(1, len(args)-1))

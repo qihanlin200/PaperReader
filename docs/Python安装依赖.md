@@ -53,3 +53,7 @@ py -3 -m venv .venv
 ## 更新已有环境
 
 新增的 `matplotlib>=3.8,<4` 已统一纳入 requirements.txt，两个安装脚本均自动安装，无需单独执行 pip install matplotlib。其 NumPy、Pillow 等间接依赖由 pip 自动解析安装。旧环境重新运行 install.command 或 install.bat 即可补齐，脚本随后执行 pip check 验证依赖兼容性。这里只提供联网一键安装，不是离线依赖包。
+
+## 打包依赖
+
+`requirements-build.txt` 引用运行依赖并添加 `pyinstaller>=6.11,<7`。macOS 一键构建脚本为根目录 build-macos.command，生成可独立运行的 .app 与 ZIP；普通源码运行只需 requirements.txt。

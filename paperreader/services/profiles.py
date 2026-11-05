@@ -9,6 +9,8 @@ def normalize_profiles(config):
         result = {'profiles': [{'id': 'legacy', 'name': '默认模型',
                   'endpoint': config.get('endpoint', 'https://api.openai.com/v1'),
                   'model': config.get('model', ''), 'key_account': 'api'}], 'active_id': 'legacy'}
+    for profile in result['profiles']:
+        profile.setdefault('max_input_chars', 50000)
     if result['active_id'] not in [p['id'] for p in result['profiles']]:
         result['active_id'] = result['profiles'][0]['id']
     return result
@@ -16,7 +18,7 @@ def normalize_profiles(config):
 
 def new_profile():
     identifier = uuid.uuid4().hex
-    return dict(id=identifier, name='新模型', endpoint='https://api.openai.com/v1', model='', key_account='model:'+identifier)
+    return dict(id=identifier, name='新模型', endpoint='https://api.openai.com/v1', model='', key_account='model:'+identifier, max_input_chars=50000)
 
 
 def active_profile(config):
