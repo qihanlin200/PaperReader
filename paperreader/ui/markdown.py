@@ -3,12 +3,17 @@ from PySide6.QtCore import Signal, Qt, QObject
 from concurrent.futures import ThreadPoolExecutor
 from PySide6.QtGui import QTextDocument, QTextCursor, QTextBlockFormat, QTextCharFormat, QTextFormat, QTextTable, QColor, QBrush
 from PySide6.QtWidgets import QTextBrowser
-from paperreader.ui.theme import DOCUMENT_CSS
+from paperreader.ui.theme import ACCENT, DOCUMENT_CSS
 from paperreader.ui.math_render import markdown_html, render_formula
 
 # MathText imports/font discovery and rasterization must not block Qt's event loop.
 # One worker also serializes matplotlib's process-wide rendering state.
 _math_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='paperreader-math')
+
+_ANALYSIS_SECTION_LABELS = {
+    "一句话概括", "研究问题", "核心方法", "方法骨架", "主要贡献",
+    "关键证据", "关键结果", "实验结果", "局限与适用范围", "局限性", "阅读建议",
+}
 
 
 class MathResult(QObject):
@@ -157,6 +162,8 @@ class MarkdownBrowser(QTextBrowser):
             cursor = QTextCursor(block)
             fmt = block.blockFormat()
             level = fmt.headingLevel()
+            if not level and not block.textList() and block.text().strip().rstrip("：:") in _ANALYSIS_SECTION_LABELS:
+                level = 3
             fmt.setLineHeight(140 if level else 150, QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
             fmt.setTopMargin(14 if level and block.blockNumber() else 0)
             fmt.setBottomMargin(6 if level else (4 if block.textList() else 9))
@@ -165,7 +172,9 @@ class MarkdownBrowser(QTextBrowser):
             chars = QTextCharFormat()
             chars.setProperty(QTextFormat.Property.FontPixelSize, size)
             chars.setProperty(QTextFormat.Property.FontSizeAdjustment, 0)
-            cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
+            if level:
+                chars.setForeground(QColor(ACCENT))
+            cursor.setPosition(block.position() + block.length() - 1, QTextCursor.MoveMode.KeepAnchor)
             cursor.mergeCharFormat(chars)
             block = block.next()
 

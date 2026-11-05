@@ -1,4 +1,4 @@
-"""Click to collapse a pane; hold to resize without accidental collapse."""
+"""Click to collapse a pane or drag horizontally to resize it."""
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QSplitter, QSplitterHandle
@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QSplitter, QSplitterHandle
 
 class PaneHandle(QSplitterHandle):
     HOLD_MS = 450
+    DRAG_THRESHOLD = 6
 
     def __init__(self, orientation, parent):
         super().__init__(orientation, parent)
@@ -18,7 +19,7 @@ class PaneHandle(QSplitterHandle):
         self.timer.setInterval(self.HOLD_MS)
         self.timer.timeout.connect(self.begin_drag)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip("点击收起/展开左侧栏；Shift+点击操作右侧栏。长按 0.45 秒后拖动调整栏宽。")
+        self.setToolTip("点击收起/展开左侧栏；Shift+点击操作右侧栏。左右拖动调整栏宽。")
 
     def index(self):
         splitter = self.splitter()
@@ -35,14 +36,18 @@ class PaneHandle(QSplitterHandle):
 
     def begin_drag(self):
         if self.pressed:
+            self.timer.stop()
             self.dragging = True
             self.setCursor(Qt.CursorShape.SplitHCursor)
             self.update()
 
     def mouseMoveEvent(self, event):
-        if self.pressed and self.dragging:
+        if self.pressed:
             delta = event.globalPosition().toPoint().x() - self.origin.x()
-            self.moveSplitter(self.initial_position + delta)
+            if not self.dragging and abs(delta) > self.DRAG_THRESHOLD:
+                self.begin_drag()
+            if self.dragging:
+                self.moveSplitter(self.initial_position + delta)
         event.accept()
 
     def mouseReleaseEvent(self, event):
@@ -50,9 +55,8 @@ class PaneHandle(QSplitterHandle):
             event.ignore(); return
         self.timer.stop()
         if not self.dragging:
-            # A quick drag is neither a click nor an intentional long-press resize.
             distance = (event.globalPosition().toPoint() - self.origin).manhattanLength()
-            if distance <= 6:
+            if distance <= self.DRAG_THRESHOLD:
                 self.splitter().toggle(self.index() if self.right_side else self.index()-1)
         self.pressed = False; self.dragging = False
         self.setCursor(Qt.CursorShape.PointingHandCursor); self.update(); event.accept()

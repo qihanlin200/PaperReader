@@ -265,7 +265,7 @@ class StreamingUITests(unittest.TestCase):
         self.assertEqual(view.selected()[0], 'Alpha Beta')
         view.close(); doc.close()
 
-    def test_splitter_click_collapse_restore_and_hold_drag(self):
+    def test_splitter_click_collapse_restore_and_immediate_drag(self):
         from PySide6.QtTest import QTest
         from PySide6.QtCore import Qt, QPoint
         self.window.show(); self.app.processEvents()
@@ -282,7 +282,7 @@ class StreamingUITests(unittest.TestCase):
         QTest.mouseRelease(handle, Qt.MouseButton.LeftButton)
         self.assertEqual(splitter.sizes()[0], before)
         QTest.mousePress(handle, Qt.MouseButton.LeftButton)
-        QTest.qWait(handle.HOLD_MS + 150)
+        self.assertFalse(handle.dragging)
         from PySide6.QtGui import QMouseEvent
         from PySide6.QtCore import QEvent, QPointF
         local = handle.rect().center() + QPoint(35, 0)
