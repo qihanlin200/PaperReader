@@ -1,0 +1,18 @@
+QWidget#TopBar { background: #211b14; border-bottom-color: #685a43; }
+QWidget#TopBar QPushButton#Quiet { background: #2f261c; border-color: #66513b; color: #f1e4ce; }
+QWidget#TopBar QPushButton#Quiet:hover { background: #473424; }
+QPushButton#Brand { font-family: Georgia; font-size: 22px; }
+QWidget#LibraryPanel, QWidget#ReaderPanel, QWidget#WorkspacePanel, QWidget#ChatPanel {
+    background: #211c16; border: 1px solid #746247; border-radius: 7px;
+}
+QWidget#PanelHeader { background: #2c251c; border-bottom-color: #66553f; }
+QLabel#PanelTitle { color: #f5e5c8; }
+QPushButton#Primary, QPushButton#Quiet[analysisAction="true"] { background: #91492f; border-color: #b9704a; color: #fff0d8; font-weight: 600; }
+QPushButton#Primary:hover, QPushButton#Quiet[analysisAction="true"]:hover { background: #ab5838; }
+QPushButton#Primary:disabled { background: #4c3b30; border-color: #5b493b; color: #ab977e; }
+QListWidget#PaperList::item:selected { background: #653c28; border-color: #916244; color: #fff0d8; }
+QTabBar::tab { background: #2e281e; border: 1px solid #4e4435; border-radius: 4px; }
+QTabBar::tab:selected { background: #91492f; border-color: #b9704a; color: #fff0d8; }
+QWidget#SageCard { background: #29251b; border-bottom: 1px solid #51452f; }
+QLabel#SageTitle { color: #f2dfba; font-weight: 700; font-size: 21px; }
+QLabel#SageBadge { background: #4c492d; border: 1px solid #676044; border-radius: 8px; padding: 3px 8px; color: #f0e1bd; }

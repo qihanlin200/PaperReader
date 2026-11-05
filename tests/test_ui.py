@@ -63,6 +63,112 @@ class StreamingUITests(unittest.TestCase):
         self.assertEqual(self.library.all()[0]['notes'], '# Note\n\n**Saved**')
         self.assertFalse(self.errors)
 
+    def test_note_preview_reads_latest_text_each_time_it_is_opened(self):
+        from PySide6.QtCore import QSignalBlocker
+        editor = self.window.notes
+        editor.setPlainText("# 第一次修改")
+        editor.tabs.setCurrentWidget(editor.preview)
+        self.assertEqual(editor.preview.toPlainText(), "第一次修改")
+        editor.tabs.setCurrentWidget(editor.source)
+        with QSignalBlocker(editor.source):
+            editor.setPlainText("## 第二次修改\n\n**最新内容**")
+        editor.tabs.setCurrentWidget(editor.preview)
+        self.assertEqual(editor.preview.toPlainText(), "第二次修改\n最新内容")
+        self.assertIn("<h2", editor.preview.document().toHtml())
+
+    def test_new_answer_is_visible_without_resizing_chat(self):
+        from PySide6.QtCore import QEvent, QObject
+
+        class PaintEvents(QObject):
+            count = 0
+
+            def eventFilter(self, watched, event):
+                if event.type() == QEvent.Type.Paint:
+                    self.count += 1
+                return False
+
+        self.assertTrue(self.window.change_theme("naruto"))
+        chat = self.window.chat
+        self.window.paper["messages"] += [
+            {"role": "user", "content": "旧问题"},
+            {"role": "assistant", "content": "旧回答内容\n\n" * 100},
+        ]
+        self.window.show()
+        self.window.render_chat()
+        self.app.processEvents()
+        size = chat.size()
+        bar = chat.verticalScrollBar()
+        self.assertGreater(bar.maximum(), 0)
+        bar.setValue(0)
+        paints = PaintEvents(chat)
+        chat.viewport().installEventFilter(paints)
+
+        self.window.question.setPlainText("新问题")
+        with patch('paperreader.ui.window.complete', return_value="新回答已显示"):
+            self.window.ask()
+            self.wait()
+
+        answer = chat.document().find("新回答已显示")
+        self.assertFalse(answer.isNull())
+        self.assertEqual(chat.size(), size)
+        self.assertEqual(bar.value(), bar.maximum())
+        self.assertTrue(chat.viewport().rect().intersects(chat.cursorRect(answer)))
+        self.assertGreater(paints.count, 0)
+        self.assertFalse(self.window.chat_reflow_timer.isActive())
+
+    def test_streaming_text_waits_for_scrollbar_drag_in_both_panes(self):
+        from threading import Event
+        from PySide6.QtTest import QTest
+
+        self.window.show()
+        first = "第一批流式内容，用于测试长文滚动。\n\n" * 100
+        tail = "下一批内容"
+
+        def wait_for_text(browser, text):
+            deadline = time.monotonic() + 2
+            while text not in browser.toPlainText() and time.monotonic() < deadline:
+                QTest.qWait(10)
+            self.assertIn(text, browser.toPlainText())
+
+        for name, browser, start in (
+            ("analysis", self.window.summary, self.window.analyze),
+            ("chat", self.window.chat, self.window.ask),
+        ):
+            with self.subTest(pane=name):
+                send_tail, finish = Event(), Event()
+
+                def model(config, key, messages, on_chunk=None):
+                    on_chunk(first)
+                    send_tail.wait(3)
+                    for chunk in tail:
+                        on_chunk(chunk)
+                    finish.wait(3)
+                    return first + tail
+
+                with patch('paperreader.ui.window.complete', side_effect=model):
+                    self.window.question.setPlainText("测试滚动")
+                    start()
+                    bar = browser.verticalScrollBar()
+                    try:
+                        wait_for_text(browser, "第一批流式内容")
+                        self.assertGreater(bar.maximum(), 20)
+                        bar.setSliderDown(True)
+                        bar.setValue(bar.maximum() // 2)
+                        position = bar.value()
+                        send_tail.set()
+                        QTest.qWait(350)
+                        self.assertTrue(self.window.busy)
+                        self.assertNotIn(tail, browser.toPlainText())
+                        self.assertEqual(bar.value(), position)
+                        bar.setSliderDown(False)
+                        wait_for_text(browser, tail)
+                        self.assertEqual(bar.value(), position)
+                    finally:
+                        bar.setSliderDown(False)
+                        send_tail.set()
+                        finish.set()
+                        self.wait()
+
     def test_interrupted_chat_preserves_partial(self):
         def broken(config, key, messages, on_chunk=None):
             on_chunk('partial answer')
@@ -95,6 +201,7 @@ class StreamingUITests(unittest.TestCase):
                 self.assertTrue(status.timer.isActive())
                 self.assertIn('等待模型响应', status.toggle.text())
                 self.assertIn('正在调用模型，等待首段内容', self.window.chat.toPlainText())
+                self.assertNotIn('添加到笔记', self.window.chat.toPlainText())
                 self.assertTrue(status.isHidden())
                 self.window.question.setPlainText('Next question draft')
                 release.set(); self.wait()
@@ -102,13 +209,21 @@ class StreamingUITests(unittest.TestCase):
                 self.assertFalse(status.toggle.isChecked())
                 self.assertFalse(status.timer.isActive())
                 self.assertIn('已完成', status.toggle.text())
-                self.assertIn('已完成', self.window.chat.toPlainText())
-                self.assertNotIn('正在调用模型，等待首段内容', self.window.chat.toPlainText())
+                rendered = self.window.chat.toPlainText()
+                self.assertLess(rendered.index('First question'), rendered.index('已完成'))
+                self.assertLess(rendered.index('已完成'), rendered.index('Answer'))
+                self.assertNotIn('正在调用模型，等待首段内容', rendered)
                 self.assertIn('已收到模型内容', status.log.toPlainText())
                 from PySide6.QtCore import QUrl
-                self.window.chat.anchorClicked.emit(QUrl('paperreader-status:toggle'))
+                self.window.chat.anchorClicked.emit(QUrl('paperreader-status:toggle?message=0'))
                 self.assertTrue(status.toggle.isChecked())
                 self.assertIn('正在调用模型，等待首段内容', self.window.chat.toPlainText())
+                self.window.ask(); self.wait()
+                rendered = self.window.chat.toPlainText()
+                self.assertEqual(rendered.count('已完成'), 2)
+                self.assertLess(rendered.index('Next question draft'), rendered.rindex('已完成'))
+                self.window.chat.anchorClicked.emit(QUrl('paperreader-status:toggle?message=0'))
+                self.assertNotIn('正在调用模型，等待首段内容', self.window.chat.toPlainText())
         finally: release.set()
 
     def test_request_status_isolated_while_switching_papers_and_sessions(self):
@@ -178,7 +293,9 @@ class StreamingUITests(unittest.TestCase):
         menu = MagicMock()
         rename = QAction('修改论文标题…', self.window)
         remove = QAction('移除论文…', self.window)
-        menu.addAction.side_effect = [QAction('收藏论文', self.window), rename, remove]
+        menu.addAction.side_effect = [
+            QAction('收藏论文', self.window), rename, QAction('导出学习内容', self.window), remove,
+        ]
         menu.exec.side_effect = lambda position: rename.trigger()
         self.window.show(); self.app.processEvents()
         with patch.object(QInputDialog, 'exec', edit), patch('paperreader.ui.window.QMenu', return_value=menu):
@@ -189,17 +306,39 @@ class StreamingUITests(unittest.TestCase):
         self.assertEqual(saved['notes'], 'Keep notes')
 
     def test_favorite_reorders_library_without_reopening_paper(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QToolButton
+
         doc = fitz.open()
         doc.new_page().insert_text((72, 72), 'Another paper')
         newer = self.library.import_pdf(doc.tobytes(), 'Newer paper')
         doc.close()
         identifier = self.paper['id']
-        self.window.reload(identifier)
+        paper = self.library.get(identifier)
+        paper['title'] = 'A long paper title that must not push the favorite button out of view ' * 5
+        self.library.save(paper)
+        self.window.show()
+        self.window.reload(newer['id'])
+        self.app.processEvents()
         self.assertEqual(self.window.papers[0]['id'], newer['id'])
         original_doc = self.window.doc
-        self.window.toggle_favorite(self.window.papers[1])
+        view = self.window.list
+
+        def click_star(row):
+            self.app.processEvents()
+            button = view.itemWidget(view.item(row)).findChild(QToolButton, "PaperFavoriteButton")
+            self.assertTrue(button.isVisible())
+            self.assertTrue(view.viewport().rect().contains(button.mapTo(view.viewport(), button.rect().topLeft())))
+            self.assertTrue(view.viewport().rect().contains(button.mapTo(view.viewport(), button.rect().bottomRight())))
+            position = button.mapTo(view.viewport(), button.rect().center())
+            self.assertIs(view.viewport().childAt(position), button)
+            QTest.mouseClick(self.window.windowHandle(), Qt.MouseButton.LeftButton,
+                             pos=button.mapTo(self.window, button.rect().center()))
+
+        click_star(1)
         self.assertIs(self.window.doc, original_doc)
-        self.assertEqual(self.window.list.currentRow(), 0)
+        self.assertEqual(view.currentRow(), 1)
         self.assertEqual(self.window.papers[0]['id'], identifier)
         self.assertTrue(self.window.papers[0]['favorite'])
         reopened = Library(self.library.root)
@@ -207,10 +346,15 @@ class StreamingUITests(unittest.TestCase):
             self.assertTrue(reopened.list_metadata()[0]['favorite'])
         finally:
             reopened.db.close()
-        self.window.toggle_favorite(self.window.papers[0])
-        self.assertEqual(self.window.papers[0]['id'], newer['id'])
-        self.assertFalse(self.window.papers[1]['favorite'])
-        self.assertIs(self.window.doc, original_doc)
+        for theme in ('naruto', 'cat'):
+            self.assertTrue(self.window.change_theme(theme))
+            self.app.processEvents()
+            click_star(0)
+            self.assertEqual(self.window.papers[0]['id'], newer['id'])
+            self.assertFalse(self.window.papers[1]['favorite'])
+            click_star(1)
+            self.assertEqual(self.window.papers[0]['id'], identifier)
+            self.assertIs(self.window.doc, original_doc)
 
 
     def test_continuous_scroll_lazy_render_and_selection_page(self):
@@ -465,20 +609,82 @@ class StreamingUITests(unittest.TestCase):
         self.assertIs(self.window.model_selector.parent(), self.window.question.footer)
         self.assertGreaterEqual(self.window.question.footer.y(), 0)
 
+    def test_brand_settings_and_paper_context_export(self):
+        from pathlib import Path
+        from PySide6.QtCore import Qt, QTimer
+        from PySide6.QtTest import QTest
+        from PySide6.QtGui import QAction
+        from PySide6.QtWidgets import QListWidget, QPushButton
+        from unittest.mock import MagicMock
+        from paperreader.ui.window import SettingsDialog
+
+        self.window.show()
+        with fitz.open() as doc:
+            doc.new_page().insert_text((72, 72), "Other paper")
+            other = self.library.import_pdf(doc.tobytes(), "Other")
+        other["notes"] = "右击论文的笔记"
+        self.library.save(other)
+        self.window.reload(self.paper["id"])
+        self.window.notes.setPlainText("正在阅读的论文笔记")
+        path = Path(self.temp.name) / "export.md"
+        errors = []
+
+        def check_settings():
+            dialog = self.window.findChild(SettingsDialog)
+            try:
+                self.assertEqual(dialog.windowTitle(), "系统设置")
+                navigation = dialog.findChild(QListWidget, "SettingsNavigation")
+                self.assertEqual([navigation.item(i).text() for i in range(navigation.count())],
+                                 ["常规设置", "模型设置"])
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                dialog.reject()
+
+        self.assertEqual([b.text() for b in self.window.top_bar.findChildren(QPushButton)], ["PaperReader"])
+        QTimer.singleShot(0, check_settings)
+        QTest.mouseClick(self.window.brand_button, Qt.MouseButton.LeftButton)
+        self.assertFalse(errors, str(errors))
+        menu = MagicMock()
+        actions = {}
+
+        def add_action(icon, text):
+            actions[text] = QAction(icon, text, self.window)
+            return actions[text]
+
+        menu.addAction.side_effect = add_action
+        menu.exec.side_effect = lambda position: actions["导出学习内容"].trigger()
+        row = next(i for i, paper in enumerate(self.window.papers) if paper["id"] == other["id"])
+        position = self.window.list.visualItemRect(self.window.list.item(row)).center()
+        with patch('paperreader.ui.window.QMenu', return_value=menu), patch(
+            'paperreader.ui.window.QFileDialog.getSaveFileName', return_value=(str(path), "")
+        ):
+            self.window.paper_context_menu(position)
+        exported = path.read_text(encoding="utf-8")
+        self.assertIn("右击论文的笔记", exported)
+        self.assertNotIn("正在阅读的论文笔记", exported)
+        self.assertEqual(self.window.paper["id"], self.paper["id"])
+
     def test_settings_add_and_save_multiple_profiles(self):
         from PySide6.QtCore import QTimer
-        from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton, QDialogButtonBox
+        from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit, QListWidget, QPushButton, QDialogButtonBox
         from paperreader.ui.window import SettingsDialog
         saved_keys = {}
         errors = []
         def edit():
             try:
                 dialog = next(d for d in self.window.findChildren(SettingsDialog) if d.isVisible())
+                navigation = dialog.findChild(QListWidget, 'SettingsNavigation')
+                navigation.setCurrentRow(1)
                 next(b for b in dialog.findChildren(QPushButton) if b.text() == '新增配置').click()
                 dialog.findChild(QLineEdit, 'ModelEndpoint').setText('https://example.org/v1')
                 dialog.findChild(QLineEdit, 'ModelName').setText('new-model')
                 dialog.findChild(QLineEdit, 'ModelKey').setText('new-secret')
                 dialog.findChild(QLineEdit, 'ProfileName').setText('备用模型')
+                navigation.setCurrentRow(0)
+                theme = dialog.findChild(QComboBox, 'ThemePicker')
+                theme.setCurrentIndex(theme.findData('naruto'))
+                navigation.setCurrentRow(1)
                 dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Save).click()
             except Exception as exc:
                 errors.append(exc)
@@ -488,9 +694,65 @@ class StreamingUITests(unittest.TestCase):
         self.assertFalse(errors, str(errors))
         config = self.library.config()
         self.assertEqual(len(config['profiles']), 2)
+        self.assertEqual(config['theme'], 'naruto')
         self.assertEqual(self.window.config['model'], 'new-model')
         self.assertEqual(saved_keys[self.window.config['key_account']], 'new-secret')
         self.assertNotIn('new-secret', str(config))
+
+    def test_theme_switch_preserves_document_and_restores_on_restart(self):
+        from paperreader.ui.theme import ACCENT, theme_color
+        self.window.summary.set_markdown('## 研究问题\n\n保留正文与 #66ddda。')
+        original = self.window.summary.toPlainText()
+        document = self.window.doc
+        self.assertTrue(self.window.sage_card.isHidden())
+        self.assertTrue(self.window.change_theme('naruto'))
+        self.assertFalse(self.window.sage_card.isHidden())
+        self.assertIs(self.window.doc, document)
+        self.assertEqual(self.window.summary.toPlainText(), original)
+        heading = self.window.summary.document().find('研究问题')
+        self.assertEqual(heading.charFormat().foreground().color().name(), theme_color(ACCENT))
+        reopened = Window(self.library)
+        try:
+            self.assertFalse(reopened.sage_card.isHidden())
+        finally:
+            reopened.close()
+        self.assertTrue(self.window.change_theme('dark'))
+        self.assertTrue(self.window.sage_card.isHidden())
+        heading = self.window.summary.document().find('研究问题')
+        self.assertEqual(heading.charFormat().foreground().color().name(), ACCENT)
+
+    def test_followup_uses_current_theme_in_same_conversation(self):
+        from threading import Event
+
+        release = Event()
+
+        def model(config, key, messages, on_chunk=None):
+            if messages[-1]["content"] == "先看什么？":
+                release.wait(3)
+                return "嗯……让老夫看看这组对照。"
+            return "第二个回答。"
+
+        with patch('paperreader.ui.window.complete', side_effect=model) as complete:
+            self.assertTrue(self.window.change_theme('naruto'))
+            self.window.question.setPlainText("先看什么？")
+            self.window.ask()
+            try:
+                self.assertTrue(self.window.change_theme('dark'))
+                self.assertIn('蛤蟆丸', self.window.chat.toPlainText())
+            finally:
+                release.set()
+                self.wait()
+            self.window.question.setPlainText("具体怎么比较？")
+            self.window.ask()
+            self.wait()
+
+        first, second = [call.args[2] for call in complete.call_args_list]
+        self.assertIn('蛤蟆丸', first[0]['content'])
+        self.assertIn('直接、中性', second[0]['content'])
+        self.assertNotIn('蛤蟆丸', second[0]['content'])
+        self.assertTrue(any(m['role'] == 'assistant' and '老夫' in m['content'] for m in second))
+        answers = self.library.get(self.paper['id'])['messages'][1::2]
+        self.assertEqual([m['assistant_name'] for m in answers], ['蛤蟆丸', '无情的阅读机器'])
 
     def test_sessions_preserve_history_and_isolate_context(self):
         from paperreader.services.sessions import ensure_sessions
@@ -522,6 +784,7 @@ class StreamingUITests(unittest.TestCase):
         nav.update_questions([f'Question {i}' for i in range(50)])
         self.app.processEvents()
         self.assertGreater(nav.horizontalScrollBar().maximum(), 0)
+        self.assertEqual(nav.horizontalScrollBar().value(), nav.horizontalScrollBar().maximum())
         nav.choose(45)
         self.assertEqual(nav.current, 45)
         self.assertGreater(nav.horizontalScrollBar().value(), 0)
@@ -548,7 +811,7 @@ class StreamingUITests(unittest.TestCase):
         block = self.window.chat.document().begin()
         labels = []
         while block.isValid():
-            if block.text() in ('你', '蛤蟆丸'):
+            if block.text() in ('你', '无情的阅读机器'):
                 fmt = block.blockFormat()
                 self.assertTrue(fmt.alignment() & Qt.AlignmentFlag.AlignLeft)
                 self.assertEqual(fmt.leftMargin(), 0)
@@ -556,24 +819,41 @@ class StreamingUITests(unittest.TestCase):
                 self.assertEqual(fmt.textIndent(), 0)
                 labels.append(block.text())
             block = block.next()
-        self.assertEqual(labels, ['你', '蛤蟆丸', '你'])
+        self.assertEqual(labels, ['你', '无情的阅读机器', '你'])
 
     def test_add_qa_to_notes_keeps_markdown_and_unsaved_notes(self):
         from PySide6.QtCore import QUrl
+        from PySide6.QtWidgets import QTabWidget
         from paperreader.services.sessions import ensure_sessions
         session = ensure_sessions(self.window.paper)
         prompt = '引用选区：原文\n\n**为什么？**'
         answer = '## 解释\n\n- 要点\n\n```python\nprint(1)\n```\n\n\\(x_i^2\\)'
         session['messages'] += [{'role':'user','content':prompt}, {'role':'assistant','content':answer}]
-        self.window.notes.setPlainText('还未自动保存的笔记')
+        notes = self.window.notes
+        notes.setPlainText('还未自动保存的笔记\n\n' + '已有内容\n\n' * 100)
+        self.window.show()
+        self.window.splitter.widget(2).findChild(QTabWidget).setCurrentWidget(notes)
+        notes.tabs.setCurrentWidget(notes.preview)
+        self.app.processEvents()
+        bar = notes.preview.verticalScrollBar()
+        self.assertGreater(bar.maximum(), 0)
+        bar.setValue(0)
         self.window.render_chat()
         url = QUrl(f"paperreader-note://add?paper={self.window.paper['id']}&session={session['id']}&message=1")
-        self.window.add_answer_to_notes(url)
+        button = self.window.chat.document().find('添加到笔记')
+        self.assertEqual(QUrl(button.charFormat().anchorHref()), url)
+        self.window.chat.anchorClicked.emit(url)
+        self.assertIs(notes.tabs.currentWidget(), notes.preview)
+        self.assertIn('解释', notes.preview.toPlainText())
+        self.assertEqual(bar.value(), bar.maximum())
         saved = self.library.all()[0]['notes']
         self.assertTrue(saved.startswith('还未自动保存的笔记'))
         self.assertIn(prompt, saved); self.assertIn(answer, saved)
         self.assertEqual(self.window.notes.toPlainText(), saved)
-        self.window.add_answer_to_notes(url)
+        bar.setValue(0)
+        self.window.chat.anchorClicked.emit(url)
+        self.assertEqual(notes.preview.toPlainText().count('解释'), 2)
+        self.assertEqual(bar.value(), bar.maximum())
         self.assertTrue(self.window.notes.toPlainText().startswith(saved))
         self.assertEqual(self.window.notes.toPlainText().count(answer), 2)
         self.assertNotIn("noted_answers", session)

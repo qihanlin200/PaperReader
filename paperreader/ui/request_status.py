@@ -3,6 +3,7 @@ import time
 from html import escape
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QToolButton, QProgressBar, QPlainTextEdit, QSizePolicy
+from paperreader.ui.theme import theme_color
 
 
 class RequestStatus(QWidget):
@@ -37,6 +38,7 @@ class RequestStatus(QWidget):
         self.timer.timeout.connect(self.tick)
         self.running = False
         self.browser = None
+        self.render_status = None
         self.context = None
         self.owner = None
         self.records = {}
@@ -51,25 +53,33 @@ class RequestStatus(QWidget):
         ''')
         self.hide()
 
-    def attach(self, browser):
+    def attach(self, browser, render_status=None):
         self.browser = browser
+        self.render_status = render_status
         self.setParent(browser)
         self.hide()
-        browser.anchorClicked.connect(self.link_clicked)
+        if render_status is None:
+            browser.anchorClicked.connect(self.link_clicked)
 
     def link_clicked(self, url):
         if url.scheme() != 'paperreader-status': return
-        if self.context == self.owner:
+        self.toggle_context(self.context)
+
+    def toggle_context(self, context):
+        if context not in self.records:
+            return
+        if context == self.owner:
             self.toggle.click()
-        elif self.context in self.records:
-            record = self.records[self.context]
+        else:
+            record = self.records[context]
             record['expanded'] = not record['expanded']
-            self.render_inline()
+            self.render_inline(context)
 
     def set_context(self, context):
         if self.context == context: return
         self.context = context
-        self.render_inline()
+        if self.render_status is None:
+            self.render_inline()
 
     def discard_paper(self, identifier):
         for context in list(self.records):
@@ -78,24 +88,30 @@ class RequestStatus(QWidget):
             self.owner = None
         self.render_inline()
 
-    def render_inline(self):
+    def render_inline(self, context=None):
         if self.browser is None: return
         if self.owner is not None and hasattr(self, 'started'):
             self.records[self.owner] = dict(title=self.toggle.text(), log=self.log.toPlainText(),
                                             expanded=self.toggle.isChecked())
-        record = self.records.get(self.context) if self.context is not None else None
+        if self.render_status is not None:
+            self.render_status(context or self.owner)
+        else:
+            html = self.html_for(self.context)
+            self.browser.set_status_html(html + '<hr>' if html else '')
+
+    def html_for(self, context, href='paperreader-status:toggle'):
+        record = self.records.get(context)
         if record is None:
-            self.browser.set_status_html('')
-            return
+            return ''
         arrow = '▾' if record['expanded'] else '▸'
         title = escape(record['title'])
         details = ''
         if record['expanded']:
             lines = '<br>'.join(escape(line) for line in record['log'].splitlines())
-            details = f'<p style="color:#91aabd; font-size:12px; margin:4px 0 10px 0;">{lines}</p>'
-        self.browser.set_status_html(
-            f'<p style="margin:4px 0 6px 0;"><a href="paperreader-status:toggle" '
-            f'style="color:#66ddda; text-decoration:none;">{arrow} {title}</a></p>' + details + '<hr>')
+            details = f'<p style="color:{theme_color("#91aabd")}; font-size:12px; margin:4px 0 10px 0;">{lines}</p>'
+        return (
+            f'<p style="margin:4px 0 6px 0;"><a href="{escape(href, quote=True)}" '
+            f'style="color:{theme_color("#66ddda")}; text-decoration:none;">{arrow} {title}</a></p>' + details)
 
     def expand(self, expanded):
         self.log.setVisible(expanded)
@@ -128,13 +144,17 @@ class RequestStatus(QWidget):
 
     def received(self, text):
         if not text: return
-        if self.phase != '正在接收内容':
+        first_chunk = self.phase != '正在接收内容'
+        if first_chunk:
             self.add('已收到模型内容，正在流式生成…')
         self.phase = '正在接收内容'
         self.characters += len(text)
-        self.tick()
+        if first_chunk:
+            self.tick()
 
-    def tick(self):
+    def tick(self, *, force=False):
+        if not force and self.browser is not None and self.browser.is_user_scrolling():
+            return
         elapsed = int(time.monotonic() - self.started)
         count = f' · 已接收 {self.characters} 字符' if self.characters else ''
         self.toggle.setText(f'{self.label} · {self.phase} · {elapsed}秒{count}')
@@ -145,6 +165,6 @@ class RequestStatus(QWidget):
         self.timer.stop(); self.progress.hide()
         self.phase = '已完成' if success else '请求失败，可重试'
         self.add('模型返回完成，内容已处理。' if success else '请求未完成，请查看错误提示后重试。')
-        self.tick()
+        self.tick(force=True)
         self.toggle.setChecked(not success)
         self.expand(not success)

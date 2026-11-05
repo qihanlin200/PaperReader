@@ -1,9 +1,11 @@
 """Markdown display for untrusted model output, without HTML or image loading."""
-from PySide6.QtCore import Signal, Qt, QObject
+import time
+from PySide6.QtCore import Signal, Qt, QObject, QSignalBlocker, QTimer
 from concurrent.futures import ThreadPoolExecutor
 from PySide6.QtGui import QTextDocument, QTextCursor, QTextBlockFormat, QTextCharFormat, QTextFormat, QTextTable, QColor, QBrush
 from PySide6.QtWidgets import QTextBrowser
-from paperreader.ui.theme import ACCENT, DOCUMENT_CSS
+from paperreader.services.themes import get_theme
+from paperreader.ui.theme import ACCENT, current_theme, document_stylesheet, theme_color
 from paperreader.ui.math_render import markdown_html, render_formula
 
 # MathText imports/font discovery and rasterization must not block Qt's event loop.
@@ -30,6 +32,7 @@ class MarkdownBrowser(QTextBrowser):
         self.math_sources = {}
         self._status_html = ''
         self._body_html = ''
+        self._wheel_scrolling_until = 0
         self.reading_style = reading_style
         self.allow_followup = allow_followup
         self.async_math = False
@@ -39,7 +42,11 @@ class MarkdownBrowser(QTextBrowser):
         self._markdown_text = ''
         self._math_result = MathResult(self)
         self._math_result.ready.connect(self._math_ready)
-        self.document().setDefaultStyleSheet(DOCUMENT_CSS)
+        self._math_render_timer = QTimer(self)
+        self._math_render_timer.setSingleShot(True)
+        self._math_render_timer.setInterval(120)
+        self._math_render_timer.timeout.connect(self._render_math)
+        self.document().setDefaultStyleSheet(document_stylesheet())
         self.document().setDocumentMargin(10)
         self.setOpenExternalLinks(False)
         self.setOpenLinks(False)
@@ -54,13 +61,13 @@ class MarkdownBrowser(QTextBrowser):
                     fmt.setAlignment(Qt.AlignmentFlag.AlignLeft)
                     fmt.setLeftMargin(0); fmt.setRightMargin(0)
                     fmt.setCellPadding(7); fmt.setCellSpacing(0)
-                    fmt.setBorderBrush(QBrush(QColor('#34465a')))
+                    fmt.setBorderBrush(QBrush(QColor(theme_color('#34465a'))))
                     child.setFormat(fmt)
                     for row in range(child.rows()):
                         for column in range(child.columns()):
                             cell = child.cellAt(row, column)
                             cell_fmt = cell.format()
-                            cell_fmt.setBackground(QColor('#213243' if row == 0 else '#101824'))
+                            cell_fmt.setBackground(QColor(theme_color('#213243' if row == 0 else '#101824')))
                             cell.setFormat(cell_fmt)
                             cursor = cell.firstCursorPosition()
                             end = cell.lastCursorPosition().position()
@@ -73,11 +80,26 @@ class MarkdownBrowser(QTextBrowser):
                 visit(child)
         visit(self.document().rootFrame())
 
+    def refresh_theme(self):
+        position = self.verticalScrollBar().value()
+        self.document().setDefaultStyleSheet(document_stylesheet())
+        self.setHtml(self._body_html)
+        if self.reading_style:
+            self.format_reading_text()
+        self.verticalScrollBar().setValue(position)
+
+    def wheelEvent(self, event):
+        self._wheel_scrolling_until = time.monotonic() + 0.18
+        super().wheelEvent(event)
+
+    def is_user_scrolling(self):
+        return self.verticalScrollBar().isSliderDown() or time.monotonic() < self._wheel_scrolling_until
+
     def set_status_html(self, html):
         if html == self._status_html: return
         scrollbar = self.verticalScrollBar()
         position = scrollbar.value()
-        following = position >= scrollbar.maximum() - 20
+        following = position == scrollbar.maximum()
         self._status_html = html
         self.setHtml(self._body_html)
         if self.reading_style: self.format_reading_text()
@@ -115,7 +137,7 @@ class MarkdownBrowser(QTextBrowser):
         self._markdown_text = text
         scrollbar = self.verticalScrollBar()
         previous = scrollbar.value()
-        following = previous >= scrollbar.maximum() - 20
+        following = previous == scrollbar.maximum()
         self.math_resources.clear(); self.math_sources.clear()
         self.setHtml(self.html_fragment(text))
         if self.reading_style:
@@ -151,12 +173,19 @@ class MarkdownBrowser(QTextBrowser):
         self._formula_images.update(images)
         # Bound retained images while keeping the current batch available.
         if len(self._formula_images) > 512: self._formula_images = dict(images)
+        self._render_math()
+
+    def _render_math(self):
+        if self.is_user_scrolling():
+            self._math_render_timer.start()
+            return
         if self.external_math: self.mathUpdated.emit()
         else: self.set_markdown(self._markdown_text)
 
 
     def format_reading_text(self):
         """Qt Markdown does not consistently apply CSS paragraph metrics; format blocks directly."""
+        heading_background = get_theme(current_theme()).heading_background
         block = self.document().begin()
         while block.isValid():
             cursor = QTextCursor(block)
@@ -167,13 +196,17 @@ class MarkdownBrowser(QTextBrowser):
             fmt.setLineHeight(140 if level else 150, QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
             fmt.setTopMargin(14 if level and block.blockNumber() else 0)
             fmt.setBottomMargin(6 if level else (4 if block.textList() else 9))
+            if level and heading_background:
+                fmt.setBackground(QColor(heading_background))
+                fmt.setLeftMargin(8)
+                fmt.setLineHeight(175, QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
             cursor.setBlockFormat(fmt)
             size = {1: 18, 2: 16, 3: 14, 4: 13, 5: 13, 6: 13}.get(level, 13)
             chars = QTextCharFormat()
             chars.setProperty(QTextFormat.Property.FontPixelSize, size)
             chars.setProperty(QTextFormat.Property.FontSizeAdjustment, 0)
             if level:
-                chars.setForeground(QColor(ACCENT))
+                chars.setForeground(QColor(theme_color(ACCENT)))
             cursor.setPosition(block.position() + block.length() - 1, QTextCursor.MoveMode.KeepAnchor)
             cursor.mergeCharFormat(chars)
             block = block.next()
@@ -200,16 +233,30 @@ class MarkdownEditor(QWidget):
         self.tabs.addTab(self.preview, "预览")
         layout.addWidget(self.tabs)
         self.source.textChanged.connect(self.changed)
+        self.tabs.currentChanged.connect(self.refresh_visible_preview)
 
     def changed(self):
         self.preview.set_markdown(self.toPlainText())
         self.textChanged.emit()
 
+    def refresh_visible_preview(self):
+        if self.tabs.currentWidget() is self.preview:
+            # Read the editor again after the preview is visible and sized.
+            self.preview.set_markdown(self.toPlainText())
+
     def toPlainText(self):
         return self.source.toPlainText()
 
-    def setPlainText(self, text):
-        self.source.setPlainText(text)
+    def setPlainText(self, text, *, reveal_append=False):
+        if not reveal_append:
+            self.source.setPlainText(text)
+            return
+        with QSignalBlocker(self.source):
+            self.source.setPlainText(text)
+        self.changed()
+        if self.preview.isVisible():
+            scrollbar = self.preview.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
 
     def clear(self):
         self.source.clear()

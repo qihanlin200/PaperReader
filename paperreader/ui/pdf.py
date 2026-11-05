@@ -140,16 +140,24 @@ class PageView(QLabel):
     def contextMenuEvent(self, event):
         text, rects = self.selected()
         menu = QMenu(self)
+        menu.setObjectName("PdfSelectionMenu")
         hit_rects = rects
         if not hit_rects and self.page is not None:
             point = fitz.Point(event.pos().x()/self.scale, event.pos().y()/self.scale) * self.page.derotation_matrix
             hit_rects = [r for mark in self.marks for r in mark["rects"] if fitz.Rect(r).contains(point)]
         overlapping = [mark for mark in self.marks if any(fitz.Rect(a).intersects(fitz.Rect(b)) for a in hit_rects for b in mark["rects"])]
         if text:
-            for name in ["复制", "翻译所选内容", "针对所选内容提问", "高亮", "添加批注"]:
+            for name in ["复制", "翻译所选内容", "针对所选内容提问"]:
                 menu.addAction(name)
-        if any(m.get("highlight", True) for m in overlapping): menu.addAction("取消高亮")
-        if any(m.get("comment") for m in overlapping): menu.addAction("删除批注")
+            menu.addSeparator()
+            menu.addAction("高亮")
+            menu.addAction("添加批注")
+        has_highlight = any(m.get("highlight", True) for m in overlapping)
+        has_comment = any(m.get("comment") for m in overlapping)
+        if text and (has_highlight or has_comment):
+            menu.addSeparator()
+        if has_highlight: menu.addAction("取消高亮")
+        if has_comment: menu.addAction("删除批注")
         if not text and not overlapping:
             hint = menu.addAction("请先选择文字，或在已有高亮/批注上右键")
             hint.setEnabled(False)

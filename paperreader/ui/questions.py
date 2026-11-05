@@ -1,5 +1,5 @@
 """Centered question markers, horizontally scrollable without a visible scrollbar."""
-from PySide6.QtCore import Qt, Signal, QPoint
+from PySide6.QtCore import Qt, Signal, QPoint, QTimer
 from PySide6.QtWidgets import QScrollArea, QWidget, QHBoxLayout, QPushButton
 
 
@@ -15,14 +15,18 @@ class QuestionNavigation(QScrollArea):
         self.setFixedHeight(32)
         self.setMinimumWidth(20)
         self.items = []; self.current = -1
+        self.context = None
         self.viewport().installEventFilter(self)
         content = QWidget(); self.row = QHBoxLayout(content)
         self.row.setContentsMargins(0, 0, 0, 0); self.row.setSpacing(2)
         self.row.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setWidget(content)
+        self.latest_scroll = QTimer(self, interval=0, singleShot=True)
+        self.latest_scroll.timeout.connect(self.scroll_to_latest)
 
-    def update_questions(self, questions):
-        if questions == self.items: return
+    def update_questions(self, questions, *, context=None):
+        if questions == self.items and context == self.context: return
+        self.context = context
         self.items = list(questions); self.current = len(questions)-1
         while self.row.count():
             item = self.row.takeAt(0)
@@ -37,14 +41,21 @@ class QuestionNavigation(QScrollArea):
             button.customContextMenuRequested.connect(lambda pos, i=index, b=button: self.contextRequested.emit(i, b.mapToGlobal(pos)))
             self.row.addWidget(button)
         self.widget().setMinimumWidth(max(0, len(questions)*24))
+        self.latest_scroll.start()
+
+    def scroll_to_latest(self):
+        bar = self.horizontalScrollBar()
+        bar.setValue(bar.maximum())
 
     def choose(self, index):
+        self.latest_scroll.stop()
         self.current = index
         for i in range(self.row.count()): self.row.itemAt(i).widget().setText('●' if i == index else '·')
         self.ensureWidgetVisible(self.row.itemAt(index).widget(), 8, 0)
         self.selected.emit(index)
 
     def wheelEvent(self, event):
+        self.latest_scroll.stop()
         pixels, angles = event.pixelDelta(), event.angleDelta()
         delta = pixels.x() or pixels.y() or angles.x() or angles.y()
         self.horizontalScrollBar().setValue(self.horizontalScrollBar().value()-delta)

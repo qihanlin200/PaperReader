@@ -1,13 +1,130 @@
 """Deep-space desktop theme, shared by the main window and dialogs."""
+import re
 from pathlib import Path
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont, QPalette
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QRectF, Qt
+from PySide6.QtGui import QColor, QFont, QLinearGradient, QMovie, QPainter, QPalette, QPixmap
+from PySide6.QtWidgets import QApplication, QWidget
+from paperreader.services.themes import DEFAULT_THEME_ID, get_theme
 
 BACKGROUND = '#0b1019'
 PANEL = '#101824'
 TEXT = '#e4ebf5'
 ACCENT = '#66ddda'
+_HEX_COLOR = re.compile(r'#[0-9a-fA-F]{6}(?![0-9a-fA-F])')
+
+
+def current_theme():
+    app = QApplication.instance()
+    return (app.property('paperreaderTheme') or DEFAULT_THEME_ID) if app else DEFAULT_THEME_ID
+
+
+def theme_color(color, theme=None):
+    pack = get_theme(theme or current_theme())
+    if color.lower() in pack.colors:
+        return pack.colors[color.lower()]
+    if not pack.warm_surfaces:
+        return color
+    rgb = QColor(color)
+    if rgb.blue() <= rgb.red():
+        return color
+    # Warm the remaining blue surfaces and muted text while keeping luminance.
+    level = round(0.21 * rgb.red() + 0.72 * rgb.green() + 0.07 * rgb.blue())
+    return QColor(min(255, level + 5), level, max(0, level - 8)).name()
+
+
+def theme_css(css, theme=None):
+    theme = theme or current_theme()
+    return _HEX_COLOR.sub(lambda match: theme_color(match[0], theme), css)
+
+
+class ThemeHeader(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("TopBar")
+        self.banner = None
+        self.banner_path = None
+        self.animation = None
+        self.animation_path = None
+
+    def set_animation(self, path):
+        if path == self.animation_path:
+            return
+        self.animation_path = path
+        if self.animation is not None:
+            self.animation.stop()
+            self.animation.deleteLater()
+            self.animation = None
+        if path is not None:
+            movie = QMovie(str(path), parent=self)
+            if movie.isValid():
+                self.animation = movie
+                movie.frameChanged.connect(self._update_animation)
+                if self.isVisible():
+                    movie.start()
+            else:
+                movie.deleteLater()
+        self.update()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self.animation is not None:
+            if self.animation.state() == QMovie.MovieState.Paused:
+                self.animation.setPaused(False)
+            else:
+                self.animation.start()
+
+    def hideEvent(self, event):
+        if self.animation is not None and self.animation.state() == QMovie.MovieState.Running:
+            self.animation.setPaused(True)
+        super().hideEvent(event)
+
+    def _animation_rect(self):
+        # Leave the title row above and the lamp illustration to the right.
+        return QRectF(12, 40, max(0, self.width() * .75 - 24), max(0, self.height() - 45))
+
+    def _update_animation(self, _frame_number):
+        self.update(self._animation_rect().toAlignedRect())
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        pack = get_theme(current_theme())
+        if pack.banner is None and self.animation is None:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        self._paint_banner(painter, pack)
+        if self.animation is not None:
+            frame = self.animation.currentPixmap()
+            bounds = self._animation_rect()
+            if not frame.isNull() and not bounds.isEmpty():
+                scale = min(bounds.width() / frame.width(), bounds.height() / frame.height())
+                width, height = frame.width() * scale, frame.height() * scale
+                target = QRectF(bounds.left(), bounds.bottom() - height, width, height)
+                painter.drawPixmap(target, frame, QRectF(frame.rect()))
+
+    def _paint_banner(self, painter, pack):
+        if pack.banner is None:
+            return
+        if self.banner_path != pack.banner:
+            self.banner_path = pack.banner
+            self.banner = QPixmap(str(pack.banner))
+        if self.banner.isNull():
+            return
+        width, height = self.banner.width(), self.banner.height()
+        crop_top, crop_bottom = pack.banner_crop
+        source = QRectF(0, height * crop_top, width, height * (crop_bottom - crop_top))
+        target_width = min(self.width(), round(self.height() * source.width() / source.height()))
+        target = QRectF(self.width() - target_width, 0, target_width, self.height())
+        base = QColor(pack.banner_background)
+        painter.fillRect(self.rect(), base)
+        painter.drawPixmap(target, self.banner, source)
+        fade_width = target.width() * .28
+        fade = QLinearGradient(target.left(), 0, target.left() + fade_width, 0)
+        fade.setColorAt(0, base)
+        transparent = QColor(base)
+        transparent.setAlpha(0)
+        fade.setColorAt(1, transparent)
+        painter.fillRect(QRectF(target.left(), 0, fade_width, target.height()), fade)
 
 DOCUMENT_CSS = '''
 body { color: #d0dbea; font-size: 14px; }
@@ -19,18 +136,26 @@ blockquote { background-color: #142630; color: #afc8d7; margin-left: 0; padding:
 pre { background-color: #0b121d; color: #c1e5e4; padding: 12px; white-space: pre-wrap; }
 code { color: #8ee4df; background-color: #182735; }
 a { color: #66ddda; }
+.chat-speaker { color: #66ddda; }
+a.chat-note-action { color: #66ddda; background-color: #294251; text-decoration: none; }
 th { background-color: #213243; }
 td, th { padding: 7px; border: 1px solid #34465a; }
 hr { color: #29394c; }
 '''
+
+
+def document_stylesheet():
+    return theme_css(DOCUMENT_CSS) + '\n' + get_theme(current_theme()).document_css
+
 
 STYLESHEET = '''
 QWidget { color: #e4ebf5; font-size: 13px; }
 QMainWindow, QDialog, QMessageBox { background: #0b1019; }
 QWidget#AppRoot, QWidget#ReaderPanel { background: #0b1019; }
 QWidget#TopBar { background: #111a28; border-bottom: 1px solid #263345; }
-QLabel#Brand { color: #eaf4ff; font-size: 18px; font-weight: 600; }
-QLabel#BrandMark { color: #66ddda; font-size: 23px; }
+QPushButton#Brand { background: transparent; border: 1px solid transparent; color: #eaf4ff; padding: 0 3px; font-size: 18px; font-weight: 600; }
+QPushButton#Brand:hover { color: #66ddda; }
+QPushButton#Brand:focus { border-color: #66ddda; }
 QLabel#CurrentPaper, QLabel#Muted { color: #93a4ba; }
 QLabel#SectionLabel { color: #8298b2; font-size: 11px; letter-spacing: 1px; }
 QWidget#LibraryPanel { background: #0e1520; }
@@ -56,7 +181,10 @@ QListWidget { background: transparent; border: none; outline: none; padding: 4px
 QListWidget::item { padding: 12px 9px; margin: 3px 0; border-radius: 6px; border: 1px solid transparent; }
 QListWidget::item:hover { background: #142130; }
 QListWidget::item:selected { background: #172c38; color: #e0f4f2; border-color: #355665; }
-QListWidget#PaperList::item { min-height: 20px; padding: 7px 9px; }
+QListWidget#PaperList::item { min-height: 26px; padding: 7px 9px; }
+QToolButton#PaperFavoriteButton { background: transparent; border: 1px solid transparent; border-radius: 5px; padding: 0; }
+QToolButton#PaperFavoriteButton:hover { background: #294251; }
+QToolButton#PaperFavoriteButton:focus { border-color: #66ddda; }
 QTabWidget::pane { border: none; background: #101824; }
 QTabBar { background: #101824; }
 QTabBar::tab { background: transparent; color: #93a4ba; padding: 11px 12px; border-bottom: 2px solid transparent; }
@@ -78,6 +206,12 @@ QComboBox#AnalysisMode::drop-down { background: transparent; border: none; width
 QComboBox#AnalysisMode::down-arrow { image: url("__ANALYSIS_ARROW__"); width: 12px; height: 12px; }
 QComboBox#AnalysisMode QAbstractItemView { border: 1px solid #2b4053; }
 QComboBox#AnalysisMode QAbstractItemView::item { padding: 4px 8px 4px 5px; }
+QComboBox#ThemePicker { combobox-popup: 0; background: #121d2a; border-color: #2b4053; min-height: 24px; }
+QComboBox#ThemePicker:hover, QComboBox#ThemePicker:focus { border-color: #4a6379; }
+QComboBox#ThemePicker::drop-down { background: transparent; border: none; }
+QComboBox#ThemePicker QAbstractItemView { border: 1px solid #344b62; padding: 4px 0; outline: none; }
+QComboBox#ThemePicker QAbstractItemView::item { padding: 7px 10px; min-height: 19px; }
+QComboBox#ThemePicker QAbstractItemView::item:selected { color: #8ce9e6; }
 QLineEdit, QSpinBox { background: #0c1521; border: 1px solid #34475b; border-radius: 6px; padding: 9px 11px; min-height: 22px; selection-background-color: #305663; }
 QWidget#QuoteCard { background: #142530; border: 1px solid #35515c; border-radius: 7px; }
 QSpinBox QLineEdit { background: transparent; border: none; padding: 0; min-height: 0; }
@@ -102,13 +236,22 @@ QMenu { background: #162231; border: 1px solid #344b62; padding: 5px; }
 QMenu::item { padding: 8px 20px; border-radius: 4px; }
 QMenu::item:selected { background: #294251; color: #8ce9e6; }
 QMenu::item:disabled { color: #79899b; }
+QMenu#PdfSelectionMenu { border-radius: 8px; }
+QMenu#PdfSelectionMenu::item { padding: 8px 24px 8px 14px; }
+QMenu#PdfSelectionMenu::separator { height: 1px; background: #344b62; margin: 4px 8px; }
 QToolTip { background: #1b2d3d; color: #e4ebf5; border: 1px solid #405b70; padding: 7px; }
+QListWidget#SettingsNavigation { background: #101824; border-right: 1px solid #263345; }
+QListWidget#SettingsNavigation::item { padding: 9px 12px; }
+QLabel#SettingsHeading { color: #eaf4ff; font-size: 18px; font-weight: 600; padding: 5px 0 10px; }
 '''
 
 
-def apply_theme():
+def apply_theme(theme=DEFAULT_THEME_ID):
     app = QApplication.instance()
     if app is None: return
+    pack = get_theme(theme)
+    theme = pack.identifier
+    app.setProperty('paperreaderTheme', theme)
     # The native macOS title bar follows the application appearance, not QSS.
     app.styleHints().setColorScheme(Qt.ColorScheme.Dark)
     app.setStyle('Fusion')
@@ -127,11 +270,14 @@ def apply_theme():
         QPalette.ColorRole.ToolTipBase: '#1b2d3d',
         QPalette.ColorRole.ToolTipText: TEXT,
         QPalette.ColorRole.Link: ACCENT,
-    }.items(): palette.setColor(role, QColor(value))
+    }.items(): palette.setColor(role, QColor(theme_color(value, theme)))
     app.setPalette(palette)
     font = QFont(app.font()); font.setPointSize(11); app.setFont(font)
     arrow = (Path(__file__).resolve().parent.parent / "assets" / "dropdown-arrow.svg").as_posix()
     analysis_arrow = Path(arrow).with_name("analysis-arrow.svg").as_posix()
-    app.setStyleSheet(STYLESHEET.replace("__DROPDOWN_ARROW__", arrow).replace("__ANALYSIS_ARROW__", analysis_arrow))
+    if pack.arrow:
+        arrow = analysis_arrow = pack.arrow.as_posix()
+    stylesheet = theme_css(STYLESHEET, theme) + '\n' + pack.stylesheet
+    app.setStyleSheet(stylesheet.replace("__DROPDOWN_ARROW__", arrow).replace("__ANALYSIS_ARROW__", analysis_arrow))
     from paperreader.ui.scrollbars import install_hover_scrollbars
     install_hover_scrollbars(app)

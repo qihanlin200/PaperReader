@@ -2,6 +2,7 @@
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QSplitter, QSplitterHandle
+from paperreader.ui.theme import theme_color
 
 
 class PaneHandle(QSplitterHandle):
@@ -63,8 +64,8 @@ class PaneHandle(QSplitterHandle):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor('#284d59' if self.dragging else '#131e2b'))
-        painter.setPen(QColor('#66ddda' if self.dragging else '#567089'))
+        painter.fillRect(self.rect(), QColor(theme_color('#284d59' if self.dragging else '#131e2b')))
+        painter.setPen(QColor(theme_color('#66ddda' if self.dragging else '#567089')))
         painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, '⋮')
 
 
