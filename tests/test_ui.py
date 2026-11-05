@@ -162,6 +162,8 @@ class StreamingUITests(unittest.TestCase):
         self.assertGreater(splitter.sizes()[3], 0)
 
 
+
+
     def test_retina_render_resolution_and_native_pinch(self):
         from math import ceil
         from PySide6.QtCore import QPoint, QPointF, Qt
@@ -511,3 +513,23 @@ class StreamingUITests(unittest.TestCase):
         self.assertTrue(analyses['deep']['complete'])
         self.assertIn('分段精读记录', analyses['deep']['text'])
         self.assertIn('精读报告', self.window.summary.toPlainText())
+
+
+    def test_scrollbar_reveal_hides_whole_bar_without_changing_layout(self):
+        self.window.show(); self.app.processEvents()
+        controller = self.app._paperreader_hover_scrollbars
+        self.window.chat.set_markdown('line\n\n'*100)
+        self.app.processEvents()
+        area = self.window.chat
+        controller.register(area)
+        bar = area.verticalScrollBar()
+        width = area.viewport().width()
+        controller.set_active(None)
+        self.assertEqual(bar.graphicsEffect().opacity(), 0)
+        controller.set_active(area)
+        self.assertEqual(bar.graphicsEffect().opacity(), 1)
+        controller.set_active(self.window.view)
+        self.assertEqual(bar.graphicsEffect().opacity(), 0)
+        self.assertEqual(area.viewport().width(), width)
+        bar.setValue(bar.maximum())
+        self.assertGreater(bar.value(), 0)

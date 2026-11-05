@@ -10,7 +10,7 @@
 
 | 库 | 用途 |
 | --- | --- |
-| PySide6 >=6.6,<7 | 跨平台 Qt 桌面界面、线程任务及图像显示 |
+| PySide6 >=6.8,<7 | 跨平台 Qt 桌面界面、线程任务及图像显示 |
 | PyMuPDF >=1.24,<2 | PDF 校验、渲染、提取单词及页面文本 |
 | httpx >=0.27,<1 | PDF 下载及云端模型 HTTP 请求 |
 | platformdirs >=4,<5 | 跨平台本地应用数据目录 |
@@ -57,3 +57,5 @@ py -3 -m venv .venv
 ## 打包依赖
 
 `requirements-build.txt` 引用运行依赖并添加 `pyinstaller>=6.11,<7`。macOS 一键构建脚本为根目录 build-macos.command，生成可独立运行的 .app 与 ZIP；普通源码运行只需 requirements.txt。
+
+PySide6 最低版本调整到 6.8，使用应用级深色外观 API，让原生标题栏跟随深色主题；当前开发环境 6.10.3 已满足要求。

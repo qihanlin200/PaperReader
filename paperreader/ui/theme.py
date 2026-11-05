@@ -1,5 +1,6 @@
 """Deep-space desktop theme, shared by the main window and dialogs."""
 from pathlib import Path
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QPalette
 from PySide6.QtWidgets import QApplication
 
@@ -82,10 +83,11 @@ QPushButton#QuoteClose { background: #203b48; color: #b9d8dd; border: 1px solid 
 QPushButton#QuoteClose:hover { background: #365866; color: #ffffff; border-color: #66ddda; }
 QScrollArea { border: none; background: #0a111b; }
 QScrollArea > QWidget > QWidget { background: #0a111b; }
-QScrollBar:vertical { background: #101824; width: 9px; margin: 0; }
+QScrollBar:vertical { background: transparent; width: 9px; margin: 0; }
 QScrollBar::handle:vertical { background: #35495e; border-radius: 4px; min-height: 32px; }
-QScrollBar:horizontal { background: #101824; height: 9px; margin: 0; }
+QScrollBar:horizontal { background: transparent; height: 9px; margin: 0; }
 QScrollBar::handle:horizontal { background: #35495e; border-radius: 4px; min-width: 32px; }
+QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover { background: #54748d; }
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
 QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 QStatusBar { background: #101824; color: #93a4ba; border-top: 1px solid #263345; font-size: 11px; }
@@ -101,6 +103,8 @@ QToolTip { background: #1b2d3d; color: #e4ebf5; border: 1px solid #405b70; paddi
 def apply_theme():
     app = QApplication.instance()
     if app is None: return
+    # The native macOS title bar follows the application appearance, not QSS.
+    app.styleHints().setColorScheme(Qt.ColorScheme.Dark)
     app.setStyle('Fusion')
     palette = QPalette()
     for role, value in {
@@ -122,3 +126,5 @@ def apply_theme():
     font = QFont(app.font()); font.setPointSize(11); app.setFont(font)
     arrow = (Path(__file__).resolve().parent.parent / "assets" / "dropdown-arrow.svg").as_posix()
     app.setStyleSheet(STYLESHEET.replace("__DROPDOWN_ARROW__", arrow))
+    from paperreader.ui.scrollbars import install_hover_scrollbars
+    install_hover_scrollbars(app)
