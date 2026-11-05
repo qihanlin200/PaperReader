@@ -21,10 +21,23 @@ class Library:
             self.db.execute("CREATE TABLE IF NOT EXISTS paper_index (id TEXT PRIMARY KEY, title TEXT, source TEXT, removed INTEGER NOT NULL DEFAULT 0)")
             if not exists:
                 self.db.execute("INSERT INTO paper_index SELECT id, json_extract(data, '$.title'), COALESCE(json_extract(data, '$.source'), ''), COALESCE(json_extract(data, '$.removed'), 0) FROM papers ORDER BY rowid")
+            columns = {column[1] for column in self.db.execute("PRAGMA table_info(paper_index)")}
+            if "favorite_rank" not in columns:
+                self.db.execute("ALTER TABLE paper_index ADD COLUMN favorite_rank INTEGER NOT NULL DEFAULT 0")
 
     def list_metadata(self):
-        return [dict(id=row[0], title=row[1], source=row[2]) for row in
-                self.db.execute("SELECT id,title,source FROM paper_index WHERE removed=0 ORDER BY rowid DESC")]
+        return [dict(id=row[0], title=row[1], source=row[2], favorite=bool(row[3])) for row in
+                self.db.execute("SELECT id,title,source,favorite_rank FROM paper_index WHERE removed=0 ORDER BY favorite_rank DESC, rowid DESC")]
+
+    def set_favorite(self, identifier, favorite):
+        with self.db:
+            self.db.execute("""
+                UPDATE paper_index
+                SET favorite_rank = CASE WHEN ? THEN
+                    COALESCE((SELECT MAX(favorite_rank) FROM paper_index), 0) + 1
+                    ELSE 0 END
+                WHERE id = ? AND removed = 0
+            """, (favorite, identifier))
 
     def get(self, identifier):
         row = self.db.execute("SELECT data FROM papers WHERE id=?", (identifier,)).fetchone()

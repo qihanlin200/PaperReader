@@ -178,7 +178,7 @@ class StreamingUITests(unittest.TestCase):
         menu = MagicMock()
         rename = QAction('修改论文标题…', self.window)
         remove = QAction('移除论文…', self.window)
-        menu.addAction.side_effect = [rename, remove]
+        menu.addAction.side_effect = [QAction('收藏论文', self.window), rename, remove]
         menu.exec.side_effect = lambda position: rename.trigger()
         self.window.show(); self.app.processEvents()
         with patch.object(QInputDialog, 'exec', edit), patch('paperreader.ui.window.QMenu', return_value=menu):
@@ -187,6 +187,30 @@ class StreamingUITests(unittest.TestCase):
         saved = self.library.get(self.paper['id'])
         self.assertEqual(saved['title'], renamed)
         self.assertEqual(saved['notes'], 'Keep notes')
+
+    def test_favorite_reorders_library_without_reopening_paper(self):
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), 'Another paper')
+        newer = self.library.import_pdf(doc.tobytes(), 'Newer paper')
+        doc.close()
+        identifier = self.paper['id']
+        self.window.reload(identifier)
+        self.assertEqual(self.window.papers[0]['id'], newer['id'])
+        original_doc = self.window.doc
+        self.window.toggle_favorite(self.window.papers[1])
+        self.assertIs(self.window.doc, original_doc)
+        self.assertEqual(self.window.list.currentRow(), 0)
+        self.assertEqual(self.window.papers[0]['id'], identifier)
+        self.assertTrue(self.window.papers[0]['favorite'])
+        reopened = Library(self.library.root)
+        try:
+            self.assertTrue(reopened.list_metadata()[0]['favorite'])
+        finally:
+            reopened.db.close()
+        self.window.toggle_favorite(self.window.papers[0])
+        self.assertEqual(self.window.papers[0]['id'], newer['id'])
+        self.assertFalse(self.window.papers[1]['favorite'])
+        self.assertIs(self.window.doc, original_doc)
 
 
     def test_continuous_scroll_lazy_render_and_selection_page(self):

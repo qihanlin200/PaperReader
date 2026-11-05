@@ -72,6 +72,12 @@ QComboBox::drop-down:hover { background: #305465; }
 QComboBox::down-arrow { image: url("__DROPDOWN_ARROW__"); width: 14px; height: 14px; }
 QComboBox:disabled { color: #7b8d9d; border-color: #2a3949; }
 QComboBox QAbstractItemView { background: #162231; color: #e4ebf5; selection-background-color: #294251; }
+QComboBox#AnalysisMode { combobox-popup: 0; background: #121d2a; color: #a3bacd; border-color: #2b4053; padding: 4px 24px 4px 8px; min-height: 18px; }
+QComboBox#AnalysisMode:hover, QComboBox#AnalysisMode:focus { background: #172433; border-color: #4a6379; }
+QComboBox#AnalysisMode::drop-down { background: transparent; border: none; width: 23px; }
+QComboBox#AnalysisMode::down-arrow { image: url("__ANALYSIS_ARROW__"); width: 12px; height: 12px; }
+QComboBox#AnalysisMode QAbstractItemView { border: 1px solid #2b4053; }
+QComboBox#AnalysisMode QAbstractItemView::item { padding: 4px 8px 4px 5px; }
 QLineEdit, QSpinBox { background: #0c1521; border: 1px solid #34475b; border-radius: 6px; padding: 9px 11px; min-height: 22px; selection-background-color: #305663; }
 QWidget#QuoteCard { background: #142530; border: 1px solid #35515c; border-radius: 7px; }
 QSpinBox QLineEdit { background: transparent; border: none; padding: 0; min-height: 0; }
@@ -125,6 +131,7 @@ def apply_theme():
     app.setPalette(palette)
     font = QFont(app.font()); font.setPointSize(11); app.setFont(font)
     arrow = (Path(__file__).resolve().parent.parent / "assets" / "dropdown-arrow.svg").as_posix()
-    app.setStyleSheet(STYLESHEET.replace("__DROPDOWN_ARROW__", arrow))
+    analysis_arrow = Path(arrow).with_name("analysis-arrow.svg").as_posix()
+    app.setStyleSheet(STYLESHEET.replace("__DROPDOWN_ARROW__", arrow).replace("__ANALYSIS_ARROW__", analysis_arrow))
     from paperreader.ui.scrollbars import install_hover_scrollbars
     install_hover_scrollbars(app)

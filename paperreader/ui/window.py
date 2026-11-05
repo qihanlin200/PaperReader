@@ -2,9 +2,10 @@ from pathlib import Path
 import uuid
 from paperreader.services.lazy import fitz
 from paperreader.services.lazy import keyring
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, QTimer, QUrl, QUrlQuery
+from PySide6.QtCore import QObject, QRunnable, QSize, QThreadPool, Signal, QSignalBlocker, QTimer, QUrl, QUrlQuery
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QListWidget, QSplitter, QScrollArea, QTextBrowser, QTextEdit, QLineEdit, QLabel,
+    QListView, QListWidget, QSplitter, QScrollArea, QTextBrowser, QTextEdit, QLineEdit, QLabel,
     QFileDialog, QInputDialog, QMessageBox, QDialog, QFormLayout, QDialogButtonBox, QTabWidget, QListWidgetItem, QApplication, QComboBox, QMenu, QProgressDialog, QSpacerItem, QSizePolicy, QSpinBox)
 from PySide6.QtCore import Qt
 from paperreader.services.library import Library
@@ -100,6 +101,11 @@ class Window(QMainWindow):
         ll.addWidget(button("链接导入", self.import_link))
         section = QLabel("我的论文  /  LIBRARY"); section.setObjectName("SectionLabel"); ll.addWidget(section)
         self.list = QListWidget(); self.list.setObjectName("PaperList")
+        self.list.setIconSize(QSize(14, 14))
+        self.favorite_icon = QIcon(str(Path(__file__).resolve().parent.parent / "assets" / "favorite-star.svg"))
+        empty_icon = QPixmap(14, 14)
+        empty_icon.fill(Qt.GlobalColor.transparent)
+        self.unfavorite_icon = QIcon(empty_icon)
         self.list.setWordWrap(False); self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.list.setTextElideMode(Qt.TextElideMode.ElideRight); self.list.currentRowChanged.connect(self.open_paper);
         self.list.itemDoubleClicked.connect(lambda item: self.open_paper(self.list.row(item)))
@@ -127,6 +133,14 @@ class Window(QMainWindow):
         workspace = QWidget(); wl = QVBoxLayout(workspace); wl.setContentsMargins(0, 0, 0, 0); wl.setSpacing(0)
         head, row = header("学习工作台")
         self.analysis_mode = QComboBox(); self.analysis_mode.addItem("快速概要", "quick"); self.analysis_mode.addItem("精读报告", "deep")
+        self.analysis_mode.setObjectName("AnalysisMode")
+        mode_view = QListView(self.analysis_mode)
+        mode_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.analysis_mode.setView(mode_view)
+        mode_view.ensurePolished()
+        # Qt's popup margins can otherwise clip the last row in the compact control.
+        rows_height = sum(mode_view.sizeHintForRow(i) for i in range(self.analysis_mode.count()))
+        mode_view.setMinimumHeight(rows_height + 2 * mode_view.frameWidth())
         self.analysis_mode.currentIndexChanged.connect(lambda _: self.refresh())
         row.addWidget(self.analysis_mode)
         row.addWidget(button("生成", self.analyze, "Quiet")); wl.addWidget(head)
@@ -228,28 +242,46 @@ class Window(QMainWindow):
             self.statusBar().showMessage("已保存到本地")
         except Exception as exc: self.error("本地保存失败：" + str(exc))
 
-    def reload(self, identifier=None):
+    def reload(self, identifier=None, *, reopen=True):
         if hasattr(self, "timer"): self.save_notes()
-        self.papers = self.library.list_metadata(); self.list.blockSignals(True); self.list.clear()
-        for paper in self.papers:
-            source = "arXiv" if "arxiv.org" in paper.get("source", "") else ("网站 PDF" if paper.get("source") else "本地 PDF")
-            item = QListWidgetItem(" ".join(paper["title"].split()))
-            item.setToolTip(paper["title"]); self.list.addItem(item)
-        self.list.blockSignals(False)
-        if identifier:
-            self.list.setCurrentRow(next(i for i, p in enumerate(self.papers) if p["id"] == identifier))
+        self.papers = self.library.list_metadata()
+        row = next((i for i, paper in enumerate(self.papers) if paper["id"] == identifier), -1)
+        with QSignalBlocker(self.list):
+            self.list.clear()
+            for paper in self.papers:
+                icon = self.favorite_icon if paper["favorite"] else self.unfavorite_icon
+                item = QListWidgetItem(icon, " ".join(paper["title"].split()))
+                item.setToolTip(paper["title"])
+                self.list.addItem(item)
+            if not reopen and row >= 0:
+                self.list.setCurrentRow(row)
+        if reopen and row >= 0:
+            self.list.setCurrentRow(row)
 
     def paper_context_menu(self, position):
         item = self.list.itemAt(position)
         if item is None: return
         paper = self.papers[self.list.row(item)]
         menu = QMenu(self)
-        rename = menu.addAction("修改论文标题…")
+        assets = Path(__file__).resolve().parent.parent / "assets"
+        star = self.favorite_icon if paper["favorite"] else QIcon(str(assets / "favorite-outline.svg"))
+        favorite = menu.addAction(star, "取消收藏" if paper["favorite"] else "收藏论文")
+        favorite.triggered.connect(lambda: self.toggle_favorite(paper))
+        rename = menu.addAction(QIcon(str(assets / "paper-edit.svg")), "修改论文标题")
         rename.triggered.connect(lambda: self.rename_paper(item))
         menu.addSeparator()
-        action = menu.addAction("移除论文…")
+        action = menu.addAction(QIcon(str(assets / "paper-trash.svg")), "移除论文")
         action.triggered.connect(lambda: self.remove_paper(paper))
         menu.exec(self.list.viewport().mapToGlobal(position))
+
+    def toggle_favorite(self, paper):
+        try:
+            self.library.set_favorite(paper["id"], not paper["favorite"])
+        except Exception as exc:
+            self.error("更新收藏失败：" + str(exc))
+            return
+        current = self.paper["id"] if self.paper else None
+        self.reload(current, reopen=False)
 
     def remove_paper(self, paper):
         if self.busy:
