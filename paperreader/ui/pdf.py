@@ -1,4 +1,5 @@
 import fitz
+from paperreader.ui.selection import column_words
 from PySide6.QtCore import Qt, QRect, QRectF, QPoint, Signal, QEvent
 from PySide6.QtGui import QPixmap, QImage, QPainter, QColor
 from PySide6.QtWidgets import QLabel, QMenu
@@ -27,6 +28,7 @@ class PageView(QLabel):
     def display(self, page, marks):
         self.page, self.marks = page, marks
         self.words = page.get_text("words", sort=True)
+        self.column_cache = None
         self.selection = QRect()
         self.single_word = None
         self.anchor = self.endpoint = None
@@ -106,6 +108,13 @@ class PageView(QLabel):
         words = self.words
         if not words:
             return "", []
+        cache_key = (self.anchor.x(), self.anchor.y(), self.scale)
+        cached = getattr(self, 'column_cache', None)
+        if cached is None or cached[0] != cache_key:
+            point = fitz.Point(self.anchor.x()/self.scale, self.anchor.y()/self.scale) * self.page.derotation_matrix
+            words = column_words(words, point, self.page.cropbox.width, self.page.cropbox.height)
+            self.column_cache = (cache_key, words)
+        else: words = cached[1]
         # PyMuPDF text coordinates are unrotated; mouse coordinates are rendered/rotated.
         def nearest(point):
             p = fitz.Point(point.x()/self.scale, point.y()/self.scale)

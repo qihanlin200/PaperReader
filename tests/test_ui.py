@@ -533,3 +533,28 @@ class StreamingUITests(unittest.TestCase):
         self.assertEqual(area.viewport().width(), width)
         bar.setValue(bar.maximum())
         self.assertGreater(bar.value(), 0)
+
+
+    def test_drag_stays_in_starting_column(self):
+        from PySide6.QtCore import QPoint
+        from paperreader.ui.pdf import PageView
+        doc = fitz.open(); page = doc.new_page(width=600, height=800)
+        for row in range(8):
+            page.insert_text((50,100+row*18), f'LEFT{row} some words for this paper', fontsize=11)
+            page.insert_text((330,100+row*18), f'RIGHT{row} other words for this paper', fontsize=11)
+        view = PageView(); view.display(page, [])
+        def centre(word):
+            r = fitz.Rect(word[:4])*page.rotation_matrix
+            return QPoint(round((r.x0+r.x1)/2*view.scale), round((r.y0+r.y1)/2*view.scale))
+        for rotation in (0, 90):
+            page.set_rotation(rotation); view.display(page, [])
+            for prefix, excluded in [('LEFT', 'RIGHT'), ('RIGHT','LEFT')]:
+                first = next(w for w in view.words if w[4] == prefix+'1')
+                last = next(w for w in view.words if w[4] == prefix+'5')
+                for start, end in [(first,last),(last,first)]:
+                    view.anchor, view.endpoint = centre(start), centre(end)
+                    text, rects = view.selected()
+                    self.assertIn(prefix+'3', text)
+                    self.assertNotIn(excluded, text)
+                    self.assertTrue(all(r[0]<300 if prefix=='LEFT' else r[0]>300 for r in rects))
+        view.close(); doc.close()
