@@ -82,8 +82,8 @@ def complete(config, key, messages, on_chunk=None, *, cancel=None):
         raise ValueError("请求文本超过此模型的最大输入长度，请调高上限或缩短问题/选区。")
     endpoint = config["endpoint"].strip().rstrip("/")
     parsed = urlparse(endpoint)
-    if parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1", "::1")):
-        raise ValueError("API 必须使用 HTTPS，本机接口可使用 HTTP。")
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError("API 基础地址必须是有效的 HTTP 或 HTTPS 地址。")
     if not config["model"].strip():
         raise ValueError("请先设置模型名称。")
     headers = {"Authorization": "Bearer " + key} if key else {}

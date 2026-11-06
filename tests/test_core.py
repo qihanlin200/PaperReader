@@ -40,6 +40,18 @@ class CoreTests(unittest.TestCase):
         with patch("paperreader.services.network.httpx.Client", lambda **kw: original(transport=httpx.MockTransport(respond), **kw)):
             self.assertEqual(complete({"endpoint": "https://example.org/v1", "model": "test"}, "test", [{"role": "user", "content": "hi"}]), "answer")
 
+    def test_http_intranet_api_and_invalid_address(self):
+        original = httpx.Client
+        def respond(request):
+            self.assertEqual(str(request.url), "http://model.internal:8000/v1/chat/completions")
+            self.assertNotIn("Authorization", request.headers)
+            return httpx.Response(200, json={"choices": [{"message": {"content": "内网模型正常"}}]})
+        with patch("paperreader.services.network.httpx.Client", lambda **kw: original(transport=httpx.MockTransport(respond), **kw)):
+            self.assertEqual(complete({"endpoint": "http://model.internal:8000/v1/", "model": "local"}, "", [],), "内网模型正常")
+        for endpoint in ("ftp://model.internal/v1", "http://"):
+            with self.assertRaisesRegex(ValueError, "HTTP 或 HTTPS"):
+                complete({"endpoint": endpoint, "model": "local"}, "", [])
+
 
     def test_streaming(self):
         original = httpx.Client
@@ -54,7 +66,7 @@ class CoreTests(unittest.TestCase):
             return httpx.Response(200, text=events, headers={"Content-Type": "text/event-stream"})
         chunks = []
         with patch("paperreader.services.network.httpx.Client", lambda **kw: original(transport=httpx.MockTransport(respond), **kw)):
-            result = complete({"endpoint": "https://example.org/v1", "model": "test"}, "", [], on_chunk=chunks.append)
+            result = complete({"endpoint": "http://192.168.1.20:8000/v1", "model": "test"}, "", [], on_chunk=chunks.append)
         self.assertEqual(chunks, ["研究", "结果"])
         self.assertEqual(result, "研究结果")
 
