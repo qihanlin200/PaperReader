@@ -68,6 +68,34 @@ class CoreTests(unittest.TestCase):
                 complete({"endpoint": "https://example.org/v1", "model": "test"}, "", [], on_chunk=chunks.append)
         self.assertEqual(chunks, ["partial"])
 
+    def test_analysis_cancel_closes_waiting_stream(self):
+        import asyncio
+        from threading import Event
+        from paperreader.services.analysis import AnalysisStopped
+
+        cancel = Event()
+        closed = Event()
+        class WaitingStream(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
+                cancel.set()
+                await asyncio.sleep(2)
+
+            async def aclose(self):
+                closed.set()
+
+        original = httpx.AsyncClient
+        def respond(request):
+            return httpx.Response(200, stream=WaitingStream())
+        chunks = []
+        with patch("paperreader.services.network.httpx.AsyncClient",
+                   lambda **kw: original(transport=httpx.MockTransport(respond), **kw)):
+            with self.assertRaises(AnalysisStopped):
+                complete({"endpoint": "https://example.org/v1", "model": "test"}, "", [],
+                         on_chunk=chunks.append, cancel=cancel)
+        self.assertTrue(closed.is_set())
+        self.assertEqual(chunks, ["partial"])
+
 
     def test_soft_remove_restore_and_permanent_delete(self):
         with tempfile.TemporaryDirectory() as root:

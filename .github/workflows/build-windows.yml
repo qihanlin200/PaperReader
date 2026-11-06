@@ -1,0 +1,33 @@
+name: Build Windows app
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-windows.yml'
+      - 'PaperReader-windows.spec'
+      - 'build-windows.bat'
+      - 'requirements*.txt'
+      - 'paperreader/**'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          architecture: x64
+      - name: Build and smoke test
+        shell: cmd
+        run: call build-windows.bat
+      - name: Upload portable ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: PaperReader-Windows-x64
+          path: dist/PaperReader-Windows-x64.zip
+          if-no-files-found: error

@@ -59,4 +59,6 @@ py -3 -m venv .venv
 
 `requirements-build.txt` 引用运行依赖并添加 `pyinstaller>=6.11,<7`。macOS 一键构建脚本为根目录 build-macos.command，生成可独立运行的 .app 与 ZIP；普通源码运行只需 requirements.txt。
 
+Windows 一键构建脚本为根目录 `build-windows.bat`，使用相同的 `requirements-build.txt`，生成包含程序和依赖的 `dist/PaperReader-Windows-x64.zip`。须在 64 位 Windows 上运行；详见 `docs/Windows打包说明.md`。
+
 PySide6 最低版本调整到 6.8，使用应用级深色外观 API，让原生标题栏跟随深色主题；当前开发环境 6.10.3 已满足要求。

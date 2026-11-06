@@ -4,6 +4,7 @@ import sqlite3
 from pathlib import Path
 from platformdirs import user_data_dir
 from paperreader.services.titles import paper_title, is_placeholder
+from paperreader.services.sessions import ensure_sessions
 
 
 class Library:
@@ -91,6 +92,12 @@ class Library:
                      messages=[], marks=[], page=0)
         self.save(paper)
         return paper
+
+    def clear_learning(self, paper):
+        updated = dict(paper, summary="", analyses={}, notes="", messages=[], sessions=[], page=0, marks=[])
+        ensure_sessions(updated)
+        self.save(updated)
+        return updated
 
     def remove(self, paper, permanent=False):
         paper = self.get(paper["id"])

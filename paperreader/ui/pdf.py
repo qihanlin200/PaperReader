@@ -1,10 +1,10 @@
 from paperreader.services.lazy import fitz
-from paperreader.ui.selection import column_words
+from paperreader.ui.selection import column_words, paragraph_words
 from paperreader.services.themes import get_theme
 from paperreader.ui.theme import current_theme
-from PySide6.QtCore import Qt, QRect, QRectF, QPoint, Signal, QEvent
+from PySide6.QtCore import Qt, QRect, QRectF, QPoint, Signal, QEvent, QElapsedTimer
 from PySide6.QtGui import QPixmap, QImage, QPainter, QColor
-from PySide6.QtWidgets import QLabel, QMenu
+from PySide6.QtWidgets import QApplication, QLabel, QMenu
 
 
 def themed_pdf_image(pix, theme):
@@ -32,7 +32,10 @@ class PageView(QLabel):
         self.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self.setCursor(Qt.CursorShape.IBeamCursor)
         self.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
-        self.single_word = None
+        self.click_selection = None
+        self.double_click_timer = QElapsedTimer()
+        self.double_click_pos = QPoint()
+        self.double_click_word = None
         self.anchor = None
         self.endpoint = None
         self.page = None
@@ -41,6 +44,7 @@ class PageView(QLabel):
         self.selection = QRect()
         self.marks = []
         self.words = []
+        self.citation_rects = []
         self.bitmap = None
         self.render_scale = None
 
@@ -49,7 +53,7 @@ class PageView(QLabel):
         self.words = page.get_text("words", sort=True)
         self.column_cache = None
         self.selection = QRect()
-        self.single_word = None
+        self.click_selection = None
         self.anchor = self.endpoint = None
         # Qt widget geometry uses logical pixels; PDF raster needs physical screen pixels.
         from math import sqrt
@@ -72,33 +76,66 @@ class PageView(QLabel):
 
     def clear(self):
         self.bitmap = None
+        self.marks = []
+        self.click_selection = None
+        self.double_click_timer.invalidate()
         super().clear()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            self.single_word = None
-            self.start = event.position().toPoint()
+            point = event.position().toPoint()
+            if self.select_paragraph_on_third_click(point):
+                event.accept()
+                return
+            self.click_selection = None
+            self.start = point
             self.anchor = self.endpoint = self.start
             self.selection = QRect()
             self.update()
             event.accept()
         else:
+            self.double_click_timer.invalidate()
             event.ignore()
 
     def mouseDoubleClickEvent(self, event):
         if event.button() != Qt.MouseButton.LeftButton or self.page is None:
             event.ignore(); return
+        point = event.position().toPoint()
+        if self.select_paragraph_on_third_click(point):
+            event.accept()
+            return
         self.start = None
-        self.single_word = None
+        self.click_selection = None
         self.anchor = self.endpoint = None
-        point = fitz.Point(event.position().x()/self.scale, event.position().y()/self.scale)
+        pdf_point = fitz.Point(event.position().x()/self.scale, event.position().y()/self.scale)
+        pdf_point *= self.page.derotation_matrix
         for index, word in enumerate(self.words):
-            rect = fitz.Rect(word[:4]) * self.page.rotation_matrix
-            if rect.contains(point):
-                self.single_word = index
+            if fitz.Rect(word[:4]).contains(pdf_point):
+                self.click_selection = (word[4], [list(word[:4])])
+                self.double_click_pos = point
+                self.double_click_word = index
+                self.double_click_timer.start()
                 break
         self.update()
         event.accept()
+
+    def select_paragraph_on_third_click(self, point):
+        if not self.double_click_timer.isValid():
+            return False
+        elapsed = self.double_click_timer.elapsed()
+        self.double_click_timer.invalidate()
+        hints = QApplication.styleHints()
+        delta = point - self.double_click_pos
+        if (self.click_selection is None or elapsed > hints.mouseDoubleClickInterval()
+                or max(abs(delta.x()), abs(delta.y())) > hints.mouseDoubleClickDistance()):
+            return False
+        word = self.words[self.double_click_word]
+        rect = fitz.Rect(word[:4])
+        anchor = (rect.tl + rect.br) / 2
+        words = column_words(self.words, anchor, self.page.cropbox.width, self.page.cropbox.height)
+        self.click_selection = self.selected_text(paragraph_words(words, word))
+        self.update()
+        return True
 
     def mouseMoveEvent(self, event):
         if self.start is not None:
@@ -121,9 +158,8 @@ class PageView(QLabel):
             event.ignore()
 
     def selected(self):
-        if self.page is not None and self.single_word is not None:
-            word = self.words[self.single_word]
-            return word[4], [list(word[:4])]
+        if self.page is not None and self.click_selection is not None:
+            return self.click_selection
         if self.page is None or self.anchor is None or self.endpoint is None:
             return "", []
         if (self.endpoint - self.anchor).manhattanLength() < 3:
@@ -148,7 +184,10 @@ class PageView(QLabel):
                 return dx*dx + dy*dy
             return min(range(len(words)), key=lambda i: distance(words[i]))
         first, last = sorted((nearest(self.anchor), nearest(self.endpoint)))
-        selected = words[first:last+1]
+        return self.selected_text(words[first:last+1])
+
+    @staticmethod
+    def selected_text(selected):
         lines = []
         previous = None
         for word in selected:
@@ -204,6 +243,10 @@ class PageView(QLabel):
         for mark in self.marks:
             if mark.get("highlight", True):
                 for rect in mark["rects"]: draw_rect(rect)
+        if self.page is not None:
+            painter.setBrush(QColor(26, 190, 155, 100))
+            for rect in self.citation_rects:
+                draw_rect(rect)
         painter.setBrush(QColor(60, 140, 255, 90))
         _, rects = self.selected()
         for rect in rects: draw_rect(rect)
@@ -231,6 +274,7 @@ class ContinuousPDF(QScrollArea):
         self.offsets = []
         self.marks = []
         self.current = -1
+        self.citation_page = None
         self.queue = []
         self.render_timer = QTimer(self)
         self.render_timer.setSingleShot(True)
@@ -252,6 +296,7 @@ class ContinuousPDF(QScrollArea):
         self.render_timer.stop(); self.zoom_timer.stop(); self.settle_timer.stop()
         self.queue = []; self.pending_zoom = 1.0
         self.pages = []; self.offsets = []; self.current = -1; self.doc = None; self.marks = []
+        self.citation_page = None
         self.setWidget(QWidget())
 
     def load(self, doc, page=0):
@@ -259,6 +304,7 @@ class ContinuousPDF(QScrollArea):
             self.zoom_timer.stop(); self.settle_timer.stop(); self.pending_zoom = 1.0
         self.render_timer.stop(); self.queue = []
         self.doc = doc; self.pages = []; self.offsets = []; self.current = -1
+        self.citation_page = None
         container = QWidget(); container.installEventFilter(self); layout = QVBoxLayout(container)
         layout.setContentsMargins(12, 12, 12, 12); layout.setSpacing(16)
         y = 12
@@ -287,6 +333,32 @@ class ContinuousPDF(QScrollArea):
         self.verticalScrollBar().setValue(self.offsets[page])
         self.scrolled()
 
+    def clear_citation(self):
+        if self.citation_page is not None:
+            previous = self.pages[self.citation_page]
+            previous.citation_rects = []
+            previous.update()
+            self.citation_page = None
+
+    def show_citation(self, page, rects):
+        self.clear_citation()
+        self.citation_page = page
+        view = self.pages[page]
+        view.citation_rects = rects
+        view.update()
+        if not rects:
+            self.jump(page)
+            return
+        pdf_page = self.doc[page]
+        first = fitz.Rect(rects[0]) * pdf_page.rotation_matrix
+        x = view.x() + round((first.x0 + first.x1) * self.scale / 2)
+        y = self.offsets[page] + round(first.y0 * self.scale)
+        horizontal = self.horizontalScrollBar()
+        if not horizontal.value() <= x < horizontal.value() + self.viewport().width():
+            horizontal.setValue(x - self.viewport().width() // 2)
+        self.verticalScrollBar().setValue(y - self.viewport().height() // 4)
+        self.scrolled()
+
     def scrolled(self):
         if not self.pages or self.resizing_pages: return
         top = self.verticalScrollBar().value()
@@ -303,7 +375,6 @@ class ContinuousPDF(QScrollArea):
             if i not in wanted and view.page is not None:
                 view.clear(); view.page = None; view.selection = QRect()
                 view.anchor = view.endpoint = None
-                view.single_word = None
                 view.setText(f'第 {i+1} 页')
         if self.queue and not self.render_timer.isActive(): self.render_timer.start(0)
 
@@ -311,9 +382,9 @@ class ContinuousPDF(QScrollArea):
         if not self.queue or self.doc is None or self.settle_timer.isActive(): return
         index = self.queue.pop(0)
         view = self.pages[index]
-        anchor, endpoint, single_word = view.anchor, view.endpoint, view.single_word
+        anchor, endpoint, click_selection = view.anchor, view.endpoint, view.click_selection
         view.display(self.doc[index], [m for m in self.marks if m['page'] == index])
-        view.anchor, view.endpoint, view.single_word = anchor, endpoint, single_word
+        view.anchor, view.endpoint, view.click_selection = anchor, endpoint, click_selection
         if self.queue: self.render_timer.start(0)
 
     def refresh_theme(self):
@@ -340,9 +411,9 @@ class ContinuousPDF(QScrollArea):
 
     def eventFilter(self, watched, event):
         if event.type() == QEvent.Type.DevicePixelRatioChange and isinstance(watched, PageView) and watched.page is not None:
-            anchor, endpoint, single_word = watched.anchor, watched.endpoint, watched.single_word
+            anchor, endpoint, click_selection = watched.anchor, watched.endpoint, watched.click_selection
             watched.display(watched.page, watched.marks)
-            watched.anchor, watched.endpoint, watched.single_word = anchor, endpoint, single_word
+            watched.anchor, watched.endpoint, watched.click_selection = anchor, endpoint, click_selection
         if event.type() == QEvent.Type.NativeGesture:
             kind = event.gestureType()
             if kind == Qt.NativeGestureType.ZoomNativeGesture:

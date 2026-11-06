@@ -5,8 +5,9 @@ from concurrent.futures import ThreadPoolExecutor
 from PySide6.QtGui import QTextDocument, QTextCursor, QTextBlockFormat, QTextCharFormat, QTextFormat, QTextTable, QColor, QBrush
 from PySide6.QtWidgets import QTextBrowser
 from paperreader.services.themes import get_theme
+from paperreader.services.retrieval import CITATION
 from paperreader.ui.theme import ACCENT, current_theme, document_stylesheet, theme_color
-from paperreader.ui.math_render import markdown_html, render_formula
+from paperreader.ui.math_render import TOKENS, markdown_html, render_formula
 
 # MathText imports/font discovery and rasterization must not block Qt's event loop.
 # One worker also serializes matplotlib's process-wide rendering state.
@@ -16,6 +17,19 @@ _ANALYSIS_SECTION_LABELS = {
     "一句话概括", "研究问题", "核心方法", "方法骨架", "主要贡献",
     "关键证据", "关键结果", "实验结果", "局限与适用范围", "局限性", "阅读建议",
 }
+
+
+def replace_citations(text, replacements):
+    def replace(match):
+        return replacements.get(match.group(1), match.group(0))
+
+    parts = []
+    offset = 0
+    for protected in TOKENS.finditer(text):
+        parts.extend((CITATION.sub(replace, text[offset:protected.start()]), protected.group()))
+        offset = protected.end()
+    parts.append(CITATION.sub(replace, text[offset:]))
+    return "".join(parts)
 
 
 class MathResult(QObject):
@@ -40,6 +54,7 @@ class MarkdownBrowser(QTextBrowser):
         self._formula_images = {}
         self._math_running = False
         self._markdown_text = ''
+        self._markdown_footer = ''
         self._math_result = MathResult(self)
         self._math_result.ready.connect(self._math_ready)
         self._math_render_timer = QTimer(self)
@@ -48,6 +63,8 @@ class MarkdownBrowser(QTextBrowser):
         self._math_render_timer.timeout.connect(self._render_math)
         self.document().setDefaultStyleSheet(document_stylesheet())
         self.document().setDocumentMargin(10)
+        # The first level only needs room for the marker. Deeper levels add one step each.
+        self.document().setIndentWidth(20)
         self.setOpenExternalLinks(False)
         self.setOpenLinks(False)
 
@@ -133,13 +150,14 @@ class MarkdownBrowser(QTextBrowser):
         # Only internally rendered math images; never external or local-file images.
         return self.math_resources.get(name.toString()) if name is not None else None
 
-    def set_markdown(self, text):
+    def set_markdown(self, text, *, footer_html=""):
         self._markdown_text = text
+        self._markdown_footer = footer_html
         scrollbar = self.verticalScrollBar()
         previous = scrollbar.value()
         following = previous == scrollbar.maximum()
         self.math_resources.clear(); self.math_sources.clear()
-        self.setHtml(self.html_fragment(text))
+        self.setHtml(self.html_fragment(text) + footer_html)
         if self.reading_style:
             self.format_reading_text()
         scrollbar.setValue(scrollbar.maximum() if following else previous)
@@ -180,7 +198,7 @@ class MarkdownBrowser(QTextBrowser):
             self._math_render_timer.start()
             return
         if self.external_math: self.mathUpdated.emit()
-        else: self.set_markdown(self._markdown_text)
+        else: self.set_markdown(self._markdown_text, footer_html=self._markdown_footer)
 
 
     def format_reading_text(self):

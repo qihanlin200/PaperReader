@@ -1,4 +1,5 @@
-"""Keep drag selections in the starting column of a multi-column PDF."""
+"""Keep PDF selections inside the clicked column and visual paragraph."""
+from dataclasses import dataclass
 from statistics import median
 
 
@@ -34,3 +35,58 @@ def column_words(words, anchor, page_width, page_height):
     if any(w[0] < centre < w[2] and w[1] <= anchor.y <= w[3] for w in words): return words
     left_side = anchor.x < centre
     return [w for w in words if ((w[0]+w[2])/2 < centre) == left_side]
+
+
+@dataclass
+class TextLine:
+    words: list
+    left: float
+    top: float
+    right: float
+    bottom: float
+
+    @property
+    def height(self):
+        return self.bottom - self.top
+
+
+def paragraph_words(words, clicked):
+    """Split a PDF text block at visually indicated paragraph breaks."""
+    by_line = {}
+    for word in words:
+        if word[5] == clicked[5]:
+            by_line.setdefault(word[6], []).append(word)
+    lines = [
+        TextLine(line, min(w[0] for w in line), min(w[1] for w in line),
+                 max(w[2] for w in line), max(w[3] for w in line))
+        for line in by_line.values()
+    ]
+    lines.sort(key=lambda line: line.top)
+    selected = next(i for i, line in enumerate(lines) if clicked in line.words)
+    if len(lines) == 1:
+        return lines[0].words
+
+    # Use the tighter line advances so paragraph gaps do not set the baseline.
+    advances = sorted(b.top - a.top for a, b in zip(lines, lines[1:]) if b.top > a.top)
+    leading = median(advances[:(len(advances) + 1) // 2]) if advances else 0
+    right_edge = max(line.right for line in lines)
+    start = 0
+    end = len(lines)
+    for i, (previous, line) in enumerate(zip(lines, lines[1:]), 1):
+        height = min(previous.height, line.height)
+        indent = max(3, height * .5)
+        gap = line.top - previous.bottom
+        spaced = (len(advances) == 1 and gap > height * .65) or (
+            line.top - previous.top > leading + height * .24 and gap > height * .12
+        )
+        # A first-line indent usually returns to the body margin on the next line.
+        returns_to_margin = i + 1 < len(lines) and abs(lines[i + 1].left - previous.left) < indent * .7
+        ends_short = (right_edge - previous.right > height * 1.25
+                      and previous.words[-1][4].endswith((".", "。", "?", "？", "!", "！")))
+        indented = line.left - previous.left >= indent and (returns_to_margin or ends_short)
+        if spaced or indented:
+            if i > selected:
+                end = i
+                break
+            start = i
+    return [word for line in lines[start:end] for word in line.words]

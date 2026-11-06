@@ -29,3 +29,17 @@ class AnalysisTests(unittest.TestCase):
 
     def test_blank_document_rejected(self):
         with self.assertRaises(ValueError): run_analysis([(0,'')], {}, '', 'quick', None, None)
+
+    def test_resume_deep_reuses_completed_model_calls(self):
+        pages = [(0, "FIRST " * 380), (1, "SECOND " * 330)]
+        calls = []
+        def model(config, key, messages, on_chunk=None):
+            calls.append(messages)
+            return "续读结果"
+        cached = {"completed": [{"title": "已完成段落", "text": "第一段分析"}], "partial": "第二段开头。"}
+        report = run_analysis(pages, {"max_input_chars": 4096}, "", "deep", model, lambda _: None,
+                              resume=cached)
+        self.assertIn("SECOND", calls[0][1]["content"])
+        self.assertEqual(calls[0][-2]["content"], "第二段开头。")
+        self.assertIn("第一段分析", report["text"])
+        self.assertIn("第二段开头。续读结果", report["text"])

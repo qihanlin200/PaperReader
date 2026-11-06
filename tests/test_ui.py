@@ -41,7 +41,7 @@ class StreamingUITests(unittest.TestCase):
         self.assertFalse(self.window.busy)
 
     @staticmethod
-    def model(config, key, messages, on_chunk=None):
+    def model(config, key, messages, on_chunk=None, *, cancel=None):
         assert on_chunk is not None
         for text in ['## Answer\n\n', '**Markdown** result']:
             on_chunk(text); time.sleep(.01)
@@ -137,7 +137,7 @@ class StreamingUITests(unittest.TestCase):
             with self.subTest(pane=name):
                 send_tail, finish = Event(), Event()
 
-                def model(config, key, messages, on_chunk=None):
+                def model(config, key, messages, on_chunk=None, *, cancel=None):
                     on_chunk(first)
                     send_tail.wait(3)
                     for chunk in tail:
@@ -274,6 +274,51 @@ class StreamingUITests(unittest.TestCase):
         self.window.reload(first_id)
         self.assertIn('已完成', self.window.summary.toPlainText())
 
+    def test_read_button_restarts_and_continue_preserves_partial(self):
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QTextCursor
+        from PySide6.QtTest import QTest
+        from paperreader.services.analysis import AnalysisStopped
+
+        window = self.window
+        requests = []
+        def model(config, key, messages, on_chunk=None, *, cancel=None):
+            requests.append(messages)
+            if len(requests) <= 2:
+                on_chunk(f"第{len(requests)}次的部分内容。")
+                if cancel.wait(2):
+                    raise AnalysisStopped()
+            on_chunk("续读完成。")
+            return "续读完成。"
+
+        with patch('paperreader.ui.window.complete', side_effect=model):
+            for index in (1, 2):
+                self.assertEqual(window.read_button.text(), "阅读")
+                window.read_button.click()
+                self.assertEqual(window.read_button.text(), "停止")
+                deadline = time.monotonic() + 1.5
+                while f"第{index}次的部分内容" not in window.summary.toPlainText() and time.monotonic() < deadline:
+                    QTest.qWait(10)
+                self.assertIn(f"第{index}次的部分内容", window.summary.toPlainText())
+                window.read_button.click()
+                self.wait()
+                self.assertIn("继续阅读", window.summary.toPlainText())
+                self.assertTrue(self.library.get(window.paper['id'])['analyses']['quick']['stopped'])
+            self.assertEqual(len(requests[1]), 2)  # Top button restarted with no partial answer.
+            window.reload(window.paper["id"])
+            link = window.summary.document().find("继续阅读")
+            self.assertFalse(link.isNull())
+            link.setPosition(link.selectionStart())
+            link.movePosition(QTextCursor.MoveOperation.NextCharacter)
+            href = link.charFormat().anchorHref()
+            self.assertEqual(href, "paperreader-analysis:continue")
+            window.summary.anchorClicked.emit(QUrl(href))
+            self.wait()
+        self.assertEqual(requests[2][-2]["content"], "第2次的部分内容。")
+        self.assertIn("第2次的部分内容。续读完成。", window.summary.toPlainText())
+        self.assertNotIn("继续阅读", window.summary.toPlainText())
+        self.assertEqual(self.errors, [])
+
     def test_title_double_click_opens_and_context_menu_renames_in_wide_dialog(self):
         from PySide6.QtWidgets import QInputDialog, QMenu
         item = self.window.list.currentItem()
@@ -294,7 +339,8 @@ class StreamingUITests(unittest.TestCase):
         rename = QAction('修改论文标题…', self.window)
         remove = QAction('移除论文…', self.window)
         menu.addAction.side_effect = [
-            QAction('收藏论文', self.window), rename, QAction('导出学习内容', self.window), remove,
+            QAction('收藏论文', self.window), rename, QAction('导出学习内容', self.window),
+            QAction('清除学习内容', self.window), remove,
         ]
         menu.exec.side_effect = lambda position: rename.trigger()
         self.window.show(); self.app.processEvents()
@@ -527,6 +573,37 @@ class StreamingUITests(unittest.TestCase):
             view.close()
         doc.close()
 
+    def test_triple_click_selects_only_clicked_paragraph(self):
+        from PySide6.QtCore import QPoint, Qt
+        from PySide6.QtTest import QTest
+        from paperreader.ui.pdf import PageView
+
+        with fitz.open() as doc:
+            page = doc.new_page(width=600, height=800)
+            page.insert_text((50, 80), "Alpha starts the paragraph.\nSecond line continues.\nThird line finishes.")
+            page.insert_text((330, 80), "Right column starts here.\nRight column continues.\nRight column finishes.")
+            page.insert_text((50, 180), "Next paragraph remains separate.")
+            for rotation in (0, 90):
+                page.set_rotation(rotation)
+                view = PageView()
+                view.scale = .75
+                view.display(page, [])
+                view.show()
+                word = next(word for word in view.words if word[4] == "Alpha")
+                rect = fitz.Rect(word[:4]) * page.rotation_matrix
+                center = (rect.tl + rect.br) / 2
+                point = QPoint(round(center.x * view.scale), round(center.y * view.scale))
+                QTest.mouseDClick(view, Qt.MouseButton.LeftButton, pos=point)
+                QTest.mouseRelease(view, Qt.MouseButton.LeftButton, pos=point)
+                self.assertEqual(view.selected()[0], "Alpha")
+                QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=point)
+                text, rects = view.selected()
+                self.assertEqual(text, "Alpha starts the paragraph.\nSecond line continues.\nThird line finishes.")
+                self.assertTrue(all(rect[0] < 300 for rect in rects))
+                QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=point)
+                self.assertEqual(view.selected(), ("", []))
+                view.close()
+
     def test_dark_workspace_structure_and_quote_visibility(self):
         from PySide6.QtGui import QPalette
         from PySide6.QtWidgets import QLabel
@@ -727,7 +804,7 @@ class StreamingUITests(unittest.TestCase):
         release = Event()
 
         def model(config, key, messages, on_chunk=None):
-            if messages[-1]["content"] == "先看什么？":
+            if messages[-1]["content"].endswith("先看什么？"):
                 release.wait(3)
                 return "嗯……让老夫看看这组对照。"
             return "第二个回答。"
@@ -775,6 +852,55 @@ class StreamingUITests(unittest.TestCase):
         self.assertEqual(paper['messages'][0]['question'], 'First question')
         self.assertEqual(len(self.library.all()[0]['sessions']), 2)
         self.assertEqual(self.window.question_navigation.items, ['First question'])
+
+    def test_followup_identity_question_sends_no_paper_evidence(self):
+        self.window.paper["messages"].extend([
+            {"role": "user", "content": "上一条关于论文的问题"},
+            {"role": "assistant", "content": "首页提到了论文背景"},
+        ])
+        self.window.question.setPlainText("你是谁？")
+        with patch("paperreader.ui.window.complete", return_value="我是无情的阅读机器。") as complete:
+            self.window.ask(); self.wait()
+        messages = complete.call_args.args[2]
+        self.assertEqual([m["role"] for m in messages], ["system", "user"])
+        self.assertEqual(messages[-1]["content"], "你是谁？")
+        self.assertIsNone(self.window.passage_index)
+        self.assertEqual(self.window.paper["messages"][-1]["citations"], {})
+
+    def test_followup_citations_reopen_and_highlight_source(self):
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QTextCursor
+
+        with fitz.open() as doc:
+            doc.new_page().insert_text((72, 80), "Introduction to the paper.")
+            doc.new_page().insert_text((72, 500), "Ablation studies remove the retrieval module.")
+            paper = self.library.import_pdf(doc.tobytes(), "Retrieval example")
+        self.window.reload(paper["id"])
+        self.window.show()
+        self.window.question.setPlainText("消融怎么做？")
+        answer = "作者移除了检索模块【E1】。无效引用【E99】。代码 `【E1】`。"
+        with patch("paperreader.ui.window.complete", return_value=answer) as complete:
+            self.window.ask(); self.wait()
+        messages = complete.call_args.args[2]
+        self.assertIn("【E1】第 2 页\nAblation", messages[-1]["content"])
+        self.assertNotIn("Introduction to the paper.", messages[-1]["content"])
+        saved = self.library.get(paper["id"])["messages"][1]
+        self.assertEqual(set(saved["citations"]), {"E1"})
+        self.assertIn("【第 2 页】", self.window.answer_with_page_numbers(saved))
+
+        self.window.reload(paper["id"])
+        doc = self.window.chat.document()
+        cursor = doc.find("第 2 页 · E1")
+        self.assertFalse(cursor.isNull())
+        cursor.setPosition(cursor.selectionStart())
+        cursor.movePosition(QTextCursor.MoveOperation.NextCharacter)
+        href = cursor.charFormat().anchorHref()
+        self.assertTrue(href.startswith("paperreader-cite://"))
+        self.window.chat.anchorClicked.emit(QUrl(href))
+        self.assertEqual(self.window.view.citation_page, 1)
+        self.assertEqual(self.window.view.pages[1].citation_rects, saved["citations"]["E1"]["rects"])
+        self.assertGreater(self.window.view.verticalScrollBar().value(), self.window.view.offsets[1])
+        self.assertEqual(self.window.paper["marks"], [])
 
     def test_question_markers_overflow_and_navigation(self):
         from PySide6.QtCore import QPointF, QPoint, Qt
@@ -896,6 +1022,59 @@ class StreamingUITests(unittest.TestCase):
             self.window.import_file()
         self.assertEqual(len(self.library.all()), 2)
         self.assertTrue(self.errors)
+
+    def test_clear_learning_confirms_and_keeps_pdf_and_favorite(self):
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QMessageBox
+
+        with fitz.open() as doc:
+            doc.new_page().insert_text((72, 72), "First page")
+            doc.new_page().insert_text((72, 72), "Second page")
+            imported = self.library.import_pdf(doc.tobytes(), "Paper with reading progress")
+        self.window.reload(imported["id"])
+        paper = self.window.paper
+        old_session = paper["active_session"]
+        paper["summary"] = "旧概要"
+        paper["analyses"] = {"deep": {"text": "旧精读"}}
+        paper["notes"] = "旧笔记"
+        paper["messages"].append({"role": "user", "content": "旧问题"})
+        paper["marks"] = [{"page": 1, "text": "批注原文", "comment": "旧批注", "rects": [], "highlight": True}]
+        self.window.view.jump(1)
+        self.assertEqual(paper["page"], 1)
+        self.library.save(paper)
+        self.library.set_favorite(paper["id"], True)
+        self.window.notes.setPlainText("待保存的旧笔记")
+        self.window.question.setPlainText("旧问题草稿")
+        self.window.ask_about_analysis("旧引用")
+        self.window.preview_mark(0)
+
+        def click_confirmation(label):
+            dialog = next(d for d in self.window.findChildren(QMessageBox) if d.isVisible())
+            next(button for button in dialog.buttons() if button.text() == label).click()
+
+        QTimer.singleShot(0, lambda: click_confirmation("取消"))
+        self.window.clear_paper_learning(paper)
+        self.assertEqual(self.window.paper["summary"], "旧概要")
+        self.assertEqual(self.window.notes.toPlainText(), "待保存的旧笔记")
+
+        QTimer.singleShot(0, lambda: click_confirmation("确认清除"))
+        self.window.clear_paper_learning(paper)
+        self.window.save_notes()
+        saved = self.library.get(paper["id"])
+        for field, value in (("summary", ""), ("analyses", {}), ("notes", ""), ("messages", [])):
+            self.assertEqual(saved[field], value)
+        self.assertEqual(len(saved["sessions"]), 1)
+        self.assertNotEqual(saved["active_session"], old_session)
+        self.assertEqual(saved["marks"], [])
+        self.assertEqual(saved["page"], 0)
+        self.assertEqual(self.window.page_label.text(), "1 / 2")
+        self.assertEqual(self.window.mark_preview.toPlainText(), "")
+        self.assertEqual(self.window.marks.count(), 0)
+        self.assertTrue(self.library.pdf_path(saved).exists())
+        self.assertTrue(self.library.list_metadata()[0]["favorite"])
+        self.assertEqual(self.window.question.toPlainText(), "")
+        self.assertEqual(self.window.quote, "")
+        self.assertEqual(self.window.question_navigation.items, [])
 
     def test_purge_current_paper_clears_ui_and_cannot_resurrect(self):
         from unittest.mock import MagicMock

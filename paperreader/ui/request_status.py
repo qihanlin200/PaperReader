@@ -105,12 +105,14 @@ class RequestStatus(QWidget):
             return ''
         arrow = '▾' if record['expanded'] else '▸'
         title = escape(record['title'])
+        alignment = 'text-indent:0; -qt-block-indent:0;'
         details = ''
         if record['expanded']:
             lines = '<br>'.join(escape(line) for line in record['log'].splitlines())
-            details = f'<p style="color:{theme_color("#91aabd")}; font-size:12px; margin:4px 0 10px 0;">{lines}</p>'
+            details = (f'<p align="left" style="color:{theme_color("#91aabd")}; '
+                       f'font-size:12px; margin:4px 0 10px 0; {alignment}">{lines}</p>')
         return (
-            f'<p style="margin:4px 0 6px 0;"><a href="{escape(href, quote=True)}" '
+            f'<p align="left" style="margin:4px 0 6px 0; {alignment}"><a href="{escape(href, quote=True)}" '
             f'style="color:{theme_color("#66ddda")}; text-decoration:none;">{arrow} {title}</a></p>' + details)
 
     def expand(self, expanded):
@@ -160,11 +162,14 @@ class RequestStatus(QWidget):
         self.toggle.setText(f'{self.label} · {self.phase} · {elapsed}秒{count}')
         self.render_inline()
 
-    def finish(self, success=True):
+    def finish(self, success=True, *, stopped=False):
         self.running = False
         self.timer.stop(); self.progress.hide()
-        self.phase = '已完成' if success else '请求失败，可重试'
-        self.add('模型返回完成，内容已处理。' if success else '请求未完成，请查看错误提示后重试。')
+        self.phase = '已停止' if stopped else ('已完成' if success else '请求失败，可重试')
+        if stopped:
+            self.add('已停止接收模型输出。')
+        else:
+            self.add('模型返回完成，内容已处理。' if success else '请求未完成，请查看错误提示后重试。')
         self.tick(force=True)
         self.toggle.setChecked(not success)
         self.expand(not success)

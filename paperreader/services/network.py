@@ -1,8 +1,9 @@
+import asyncio
 import json
 import re
 from urllib.parse import urlparse
 from paperreader.services.lazy import httpx
-from .analysis import input_limit, message_length
+from .analysis import AnalysisStopped, input_limit, message_length
 
 
 def pdf_url(value):
@@ -47,7 +48,36 @@ def api_error_message(status):
     return f"API 请求失败（HTTP {status}）：" + reasons.get(status, "请检查服务商状态、配置及网络。")
 
 
-def complete(config, key, messages, on_chunk=None):
+async def cancellable_stream(url, headers, payload, consume, cancel):
+    async def read():
+        async with httpx.AsyncClient(timeout=180) as client:
+            async with client.stream("POST", url, headers=headers, json=payload) as response:
+                if response.is_error:
+                    raise ValueError(api_error_message(response.status_code))
+                async for line in response.aiter_lines():
+                    if consume(line):
+                        break
+
+    async def wait_for_stop():
+        while not cancel.is_set():
+            await asyncio.sleep(.05)
+
+    if cancel.is_set():
+        raise AnalysisStopped()
+    request = asyncio.create_task(read())
+    stopping = asyncio.create_task(wait_for_stop())
+    try:
+        await asyncio.wait((request, stopping), return_when=asyncio.FIRST_COMPLETED)
+        if cancel.is_set():
+            raise AnalysisStopped()
+        await request
+    finally:
+        request.cancel()
+        stopping.cancel()
+        await asyncio.gather(request, stopping, return_exceptions=True)
+
+
+def complete(config, key, messages, on_chunk=None, *, cancel=None):
     if message_length(messages) > input_limit(config):
         raise ValueError("请求文本超过此模型的最大输入长度，请调高上限或缩短问题/选区。")
     endpoint = config["endpoint"].strip().rstrip("/")
@@ -58,42 +88,54 @@ def complete(config, key, messages, on_chunk=None):
         raise ValueError("请先设置模型名称。")
     headers = {"Authorization": "Bearer " + key} if key else {}
     payload = {"model": config["model"], "messages": messages}
-    with httpx.Client(timeout=180) as client:
-        if on_chunk is not None:
-            payload["stream"] = True
-            with client.stream("POST", endpoint + "/chat/completions", headers=headers, json=payload) as response:
+    url = endpoint + "/chat/completions"
+    if on_chunk is not None:
+        payload["stream"] = True
+        pieces = []
+        finished = False
+
+        def consume(line):
+            nonlocal finished
+            if not line.startswith("data:"):
+                return False
+            data = line[5:].strip()
+            if data == "[DONE]":
+                finished = True
+                return True
+            if not data:
+                return False
+            event = json.loads(data)
+            if "error" in event:
+                raise ValueError("模型流返回错误，请检查服务状态后重试。")
+            for choice in event.get("choices", []):
+                if choice.get("index", 0) != 0:
+                    continue
+                text = choice.get("delta", {}).get("content")
+                if isinstance(text, str) and text:
+                    pieces.append(text)
+                    on_chunk(text)
+                reason = choice.get("finish_reason")
+                if reason is not None:
+                    if reason != "stop":
+                        raise ValueError("模型输出未完整结束（长度限制或内容过滤），请重试或调整模型。")
+                    finished = True
+            return False
+
+        if cancel is not None:
+            asyncio.run(cancellable_stream(url, headers, payload, consume, cancel))
+        else:
+            with httpx.Client(timeout=180) as client, client.stream("POST", url, headers=headers, json=payload) as response:
                 if response.is_error:
                     raise ValueError(api_error_message(response.status_code))
-                pieces = []
-                finished = False
                 for line in response.iter_lines():
-                    if not line.startswith("data:"):
-                        continue
-                    data = line[5:].strip()
-                    if data == "[DONE]":
-                        finished = True
+                    if consume(line):
                         break
-                    if not data:
-                        continue
-                    event = json.loads(data)
-                    if "error" in event:
-                        raise ValueError("模型流返回错误，请检查服务状态后重试。")
-                    for choice in event.get("choices", []):
-                        if choice.get("index", 0) != 0:
-                            continue
-                        text = choice.get("delta", {}).get("content")
-                        if isinstance(text, str) and text:
-                            pieces.append(text)
-                            on_chunk(text)
-                        if choice.get("finish_reason") is not None:
-                            if choice["finish_reason"] != "stop":
-                                raise ValueError("模型输出未完整结束（长度限制或内容过滤），请重试或调整模型。")
-                            finished = True
-                if not finished:
-                    raise ValueError("流式连接提前结束，已收到内容仅为部分结果。")
-                text = "".join(pieces)
-        else:
-            response = client.post(endpoint + "/chat/completions", headers=headers, json=payload)
+        if not finished:
+            raise ValueError("流式连接提前结束，已收到内容仅为部分结果。")
+        text = "".join(pieces)
+    else:
+        with httpx.Client(timeout=180) as client:
+            response = client.post(url, headers=headers, json=payload)
             if response.is_error:
                 raise ValueError(api_error_message(response.status_code))
             text = response.json()["choices"][0]["message"]["content"]
