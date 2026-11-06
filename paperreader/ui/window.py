@@ -759,7 +759,7 @@ class Window(QMainWindow):
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(dialog.accept); buttons.rejected.connect(dialog.reject); form.addRow(buttons)
         test = QPushButton("测试模型连接")
-        status = MarkdownBrowser(); status.setMinimumHeight(110); status.set_markdown("使用当前输入测试，无需先保存；会发送一条简短请求，可能产生少量费用。")
+        status = MarkdownBrowser(); status.setMinimumHeight(110); status.set_markdown("使用当前输入测试，无需先保存；会向 /chat/completions 发送一条简短的流式请求，可能产生少量费用。")
         form.addRow(test); form.addRow(status)
         def stash():
             profile = draft["profiles"][selected[0]]
@@ -796,11 +796,11 @@ class Window(QMainWindow):
             secret = key.text()
             test.setEnabled(False); buttons.setEnabled(False); dialog.testing = True
             for widget in (picker, add, remove, name, endpoint, model, key, limit): widget.setEnabled(False)
-            status.set_markdown("正在测试…")
+            status.set_markdown("正在测试流式 Chat Completions 接口…")
             job = Job(lambda emit: complete(config, secret, [{"role": "user", "content": "Reply only OK."}], on_chunk=emit), streaming=True)
             chunks = []
             def progress(text):
-                chunks.append(text); status.set_markdown("正在测试…\n\n" + "".join(chunks))
+                chunks.append(text); status.set_markdown("正在测试流式 Chat Completions 接口…\n\n" + "".join(chunks))
             job.signals.chunk.connect(progress)
             dialog.test_job = job
             def finished(message):

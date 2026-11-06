@@ -4,7 +4,7 @@ from unittest.mock import patch
 import fitz
 import httpx
 from paperreader.services.library import Library
-from paperreader.services.network import pdf_url, complete
+from paperreader.services.network import pdf_url, complete, client_options, api_error_message
 
 
 class CoreTests(unittest.TestCase):
@@ -46,11 +46,19 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(str(request.url), "http://model.internal:8000/v1/chat/completions")
             self.assertNotIn("Authorization", request.headers)
             return httpx.Response(200, json={"choices": [{"message": {"content": "内网模型正常"}}]})
-        with patch("paperreader.services.network.httpx.Client", lambda **kw: original(transport=httpx.MockTransport(respond), **kw)):
+        def direct_client(**kwargs):
+            self.assertFalse(kwargs["trust_env"])
+            return original(transport=httpx.MockTransport(respond), **kwargs)
+        with patch("paperreader.services.network.httpx.Client", direct_client):
             self.assertEqual(complete({"endpoint": "http://model.internal:8000/v1/", "model": "local"}, "", [],), "内网模型正常")
         for endpoint in ("ftp://model.internal/v1", "http://"):
             with self.assertRaisesRegex(ValueError, "HTTP 或 HTTPS"):
                 complete({"endpoint": endpoint, "model": "local"}, "", [])
+
+    def test_http_model_bypasses_environment_proxy(self):
+        self.assertFalse(client_options("http://192.168.1.20:8000/v1/chat/completions")["trust_env"])
+        self.assertTrue(client_options("https://api.example.org/v1/chat/completions")["trust_env"])
+        self.assertIn("不能据此判断 API Key 无效", api_error_message(504))
 
 
     def test_streaming(self):
@@ -63,9 +71,13 @@ class CoreTests(unittest.TestCase):
         def respond(request):
             import json
             self.assertTrue(json.loads(request.content)["stream"])
+            self.assertEqual(request.headers["Accept"], "text/event-stream")
             return httpx.Response(200, text=events, headers={"Content-Type": "text/event-stream"})
         chunks = []
-        with patch("paperreader.services.network.httpx.Client", lambda **kw: original(transport=httpx.MockTransport(respond), **kw)):
+        def direct_client(**kwargs):
+            self.assertFalse(kwargs["trust_env"])
+            return original(transport=httpx.MockTransport(respond), **kwargs)
+        with patch("paperreader.services.network.httpx.Client", direct_client):
             result = complete({"endpoint": "http://192.168.1.20:8000/v1", "model": "test"}, "", [], on_chunk=chunks.append)
         self.assertEqual(chunks, ["研究", "结果"])
         self.assertEqual(result, "研究结果")

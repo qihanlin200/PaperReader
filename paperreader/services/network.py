@@ -43,14 +43,20 @@ def api_error_message(status):
         500: "模型服务内部错误，请稍后重试。",
         502: "模型服务或上游网关异常，请稍后重试。",
         503: "模型服务暂不可用或繁忙。请稍后重试，或切换其他服务商/模型；此状态不能直接判定为密钥或余额错误。",
-        504: "模型服务或上游网关超时，请稍后重试。",
+        504: "模型服务或网关超时，不能据此判断 API Key 无效。连接测试使用流式请求；请检查网关对 stream=true 的支持及其超时设置。",
     }
     return f"API 请求失败（HTTP {status}）：" + reasons.get(status, "请检查服务商状态、配置及网络。")
 
 
+def client_options(url):
+    # HTTP is used for user-configured local/LAN endpoints. Environment proxy
+    # variables can route these requests through a gateway that returns 504.
+    return {"timeout": 180, "trust_env": urlparse(url).scheme == "https"}
+
+
 async def cancellable_stream(url, headers, payload, consume, cancel):
     async def read():
-        async with httpx.AsyncClient(timeout=180) as client:
+        async with httpx.AsyncClient(**client_options(url)) as client:
             async with client.stream("POST", url, headers=headers, json=payload) as response:
                 if response.is_error:
                     raise ValueError(api_error_message(response.status_code))
@@ -91,6 +97,7 @@ def complete(config, key, messages, on_chunk=None, *, cancel=None):
     url = endpoint + "/chat/completions"
     if on_chunk is not None:
         payload["stream"] = True
+        headers["Accept"] = "text/event-stream"
         pieces = []
         finished = False
 
@@ -124,7 +131,7 @@ def complete(config, key, messages, on_chunk=None, *, cancel=None):
         if cancel is not None:
             asyncio.run(cancellable_stream(url, headers, payload, consume, cancel))
         else:
-            with httpx.Client(timeout=180) as client, client.stream("POST", url, headers=headers, json=payload) as response:
+            with httpx.Client(**client_options(url)) as client, client.stream("POST", url, headers=headers, json=payload) as response:
                 if response.is_error:
                     raise ValueError(api_error_message(response.status_code))
                 for line in response.iter_lines():
@@ -134,7 +141,7 @@ def complete(config, key, messages, on_chunk=None, *, cancel=None):
             raise ValueError("流式连接提前结束，已收到内容仅为部分结果。")
         text = "".join(pieces)
     else:
-        with httpx.Client(timeout=180) as client:
+        with httpx.Client(**client_options(url)) as client:
             response = client.post(url, headers=headers, json=payload)
             if response.is_error:
                 raise ValueError(api_error_message(response.status_code))
