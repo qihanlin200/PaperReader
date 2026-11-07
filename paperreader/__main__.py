@@ -1,5 +1,9 @@
 import time
 _started = time.perf_counter()
+if __name__ == "__main__":
+    # Divert frozen worker processes before importing the Qt application.
+    from multiprocessing import freeze_support
+    freeze_support()
 import signal
 import sys
 from pathlib import Path
@@ -30,8 +34,16 @@ def main():
             window = Window(library=library); window.show(); window.reload(paper['id'])
             window.summary.set_markdown(r"## Formula" + "\n\n" + r"\(x_i^2+\tau\)")
             check = QTimer()
+            zoom_started = False
             def finish_smoke():
-                if window.summary.math_resources:
+                nonlocal zoom_started
+                pages = window.view.pages
+                if not window.summary.math_resources or not pages or pages[0].bitmap is None:
+                    return
+                if not zoom_started:
+                    window.view.zoom(1.05)
+                    zoom_started = True
+                elif pages[0].render_scale == window.view.scale:
                     app.exit(0 if not app.windowIcon().isNull() else 2)
             check.timeout.connect(finish_smoke); check.start(100)
             QTimer.singleShot(15000, lambda: app.exit(2))

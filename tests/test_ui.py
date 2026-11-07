@@ -517,9 +517,86 @@ class StreamingUITests(unittest.TestCase):
             QPointingDevice.primaryPointingDevice(), 2, QPointF(centre), QPointF(centre),
             QPointF(reader.viewport().mapToGlobal(centre)), .2, QPointF())
         self.assertTrue(reader.eventFilter(reader.viewport(), event))
-        reader.zoom_timer.stop(); reader.apply_pending_zoom()
-        self.assertAlmostEqual(reader.scale, old_scale*1.2)
+        self.assertAlmostEqual(reader.scale, old_scale*1.2**1.5)
         self.assertGreater(reader.verticalScrollBar().value(), 0)
+
+    def test_native_pinch_follows_each_delta_and_ignores_duplicate_qt_pinch(self):
+        from PySide6.QtCore import QPoint, QPointF, Qt
+        from PySide6.QtGui import QNativeGestureEvent, QPointingDevice, QWheelEvent
+        from PySide6.QtWidgets import QGestureEvent, QPinchGesture
+        self.window.show(); self.app.processEvents()
+        reader = self.window.view
+        page = reader.pages[0]
+        original_bitmap = page.bitmap.cacheKey()
+        original_scale = reader.scale
+        centre = reader.viewport().rect().center()
+        def native(kind, value=0):
+            return QNativeGestureEvent(kind, QPointingDevice.primaryPointingDevice(), 2,
+                QPointF(centre), QPointF(centre),
+                QPointF(reader.viewport().mapToGlobal(centre)), value, QPointF())
+        reader.eventFilter(reader.viewport(), native(Qt.NativeGestureType.BeginNativeGesture))
+        reader.eventFilter(reader.viewport(), native(Qt.NativeGestureType.ZoomNativeGesture, .04))
+        self.assertAlmostEqual(reader.scale, original_scale*1.04**1.5)
+        reader.eventFilter(reader.viewport(), native(Qt.NativeGestureType.ZoomNativeGesture, .06))
+        self.assertAlmostEqual(reader.scale, original_scale*1.04**1.5*1.06**1.5)
+        self.assertTrue(page.fast_preview)
+        self.assertEqual(page.bitmap.cacheKey(), original_bitmap)
+        pinch = QPinchGesture(); pinch.setScaleFactor(1.3); pinch.setLastScaleFactor(1.0)
+        self.assertTrue(reader.eventFilter(reader.viewport(), QGestureEvent([pinch])))
+        wheel = QWheelEvent(QPointF(centre), QPointF(reader.viewport().mapToGlobal(centre)),
+            QPoint(0, 120), QPoint(0, 120), Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.ControlModifier, Qt.ScrollPhase.ScrollUpdate, False)
+        self.assertTrue(reader.eventFilter(reader.viewport(), wheel))
+        self.assertAlmostEqual(reader.scale, original_scale*1.04**1.5*1.06**1.5)
+        reader.eventFilter(reader.viewport(), native(Qt.NativeGestureType.EndNativeGesture))
+        self.assertTrue(reader.settle_timer.isActive())
+        self.assertEqual(reader.settle_timer.interval(), 90)
+
+    def test_pinch_or_ctrl_wheel_alone_still_zooms_on_macos(self):
+        from PySide6.QtCore import QPoint, QPointF, Qt
+        from PySide6.QtGui import QNativeGestureEvent, QPointingDevice, QWheelEvent
+        from PySide6.QtWidgets import QGestureEvent, QPinchGesture
+        self.window.show(); self.app.processEvents()
+        reader = self.window.view
+        initial = reader.scale
+        centre = reader.viewport().rect().center()
+        pinch = QPinchGesture(); pinch.setLastScaleFactor(1.0); pinch.setScaleFactor(1.1)
+        self.assertTrue(reader.eventFilter(reader.viewport(), QGestureEvent([pinch])))
+        self.assertAlmostEqual(reader.scale, initial*1.1**1.5)
+        reader.finish_zoom_preview()
+        begin = QNativeGestureEvent(Qt.NativeGestureType.BeginNativeGesture,
+            QPointingDevice.primaryPointingDevice(), 3, QPointF(centre), QPointF(centre),
+            QPointF(reader.viewport().mapToGlobal(centre)), 0, QPointF())
+        reader.eventFilter(reader.viewport(), begin)
+        wheel = QWheelEvent(QPointF(centre), QPointF(reader.viewport().mapToGlobal(centre)),
+            QPoint(0, 120), QPoint(0, 120), Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.ControlModifier, Qt.ScrollPhase.ScrollUpdate, False)
+        self.assertTrue(reader.eventFilter(reader.viewport(), wheel))
+        self.assertGreater(reader.scale, initial*1.1**1.5)
+
+    def test_mouse_wheel_scrolls_and_ctrl_wheel_zooms(self):
+        from PySide6.QtCore import QPoint, QPointF, Qt
+        from PySide6.QtGui import QWheelEvent
+        self.window.show(); self.app.processEvents()
+        reader = self.window.view
+        reader.resize(450, 300); self.app.processEvents()
+        centre = reader.viewport().rect().center()
+        global_centre = QPointF(reader.viewport().mapToGlobal(centre))
+        original_scale = reader.scale
+        scroll = reader.verticalScrollBar()
+        self.assertGreater(scroll.maximum(), 0)
+        scroll.setValue(0)
+        plain = QWheelEvent(QPointF(centre), global_centre, QPoint(), QPoint(0, -120),
+            Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.ScrollUpdate, False)
+        QApplication.sendEvent(reader.viewport(), plain)
+        self.assertGreater(scroll.value(), 0)
+        self.assertEqual(reader.scale, original_scale)
+        zoom = QWheelEvent(QPointF(centre), global_centre, QPoint(), QPoint(0, 120),
+            Qt.MouseButton.NoButton, Qt.KeyboardModifier.ControlModifier,
+            Qt.ScrollPhase.ScrollUpdate, False)
+        QApplication.sendEvent(reader.viewport(), zoom)
+        self.assertAlmostEqual(reader.scale, original_scale*2**(120/480))
 
     def test_live_zoom_reuses_pages_and_bitmap_until_settled(self):
         from PySide6.QtTest import QTest
@@ -534,8 +611,10 @@ class StreamingUITests(unittest.TestCase):
         self.assertIs(reader.pages[0], page)
         self.assertEqual(page.bitmap.cacheKey(), bitmap_key)
         self.assertEqual(page.render_scale, old_render_scale)
-        QTest.qWait(250)
-        for _ in range(10): self.app.processEvents()
+        deadline = time.monotonic() + 6
+        while page.render_scale != reader.scale and time.monotonic() < deadline:
+            QTest.qWait(25)
+            self.app.processEvents()
         self.assertEqual(page.render_scale, reader.scale)
         self.assertNotEqual(page.bitmap.cacheKey(), bitmap_key)
 
@@ -741,6 +820,58 @@ class StreamingUITests(unittest.TestCase):
         self.assertIn("右击论文的笔记", exported)
         self.assertNotIn("正在阅读的论文笔记", exported)
         self.assertEqual(self.window.paper["id"], self.paper["id"])
+
+    def test_pdf_background_switch_persists_and_ignores_theme_when_off(self):
+        from PySide6.QtCore import QPoint, QTimer, Qt
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QCheckBox
+        from paperreader.services.themes import get_theme
+        from paperreader.ui.window import SettingsDialog
+        from paperreader.ui.theme import ThemeSwitch
+
+        self.window.show()
+        reader = self.window.view
+        page = reader.pages[0]
+
+        def await_color(expected):
+            deadline = time.monotonic() + 6
+            while time.monotonic() < deadline:
+                self.app.processEvents()
+                if page.bitmap is not None and page.bitmap.toImage().pixelColor(0, 0).name() == expected:
+                    return
+                QTest.qWait(25)
+            self.fail(f"PDF 纸张颜色未更新为 {expected}")
+
+        await_color(get_theme('dark').pdf_paper)
+        def turn_off():
+            dialog = self.window.findChild(SettingsDialog)
+            checkbox = dialog.findChild(QCheckBox, 'PdfFollowTheme')
+            self.assertIsInstance(checkbox, ThemeSwitch)
+            self.assertTrue(checkbox.isChecked())
+            self.assertEqual(checkbox.status_text(), '已开启')
+            QTest.mouseClick(checkbox, Qt.MouseButton.LeftButton, pos=QPoint(20, checkbox.height() // 2))
+            self.assertFalse(checkbox.isChecked())
+            self.assertEqual(checkbox.status_text(), '已关闭')
+            dialog.reject()
+        QTimer.singleShot(0, turn_off)
+        self.window.settings()
+        self.assertFalse(self.library.config()['pdf_follow_theme'])
+        await_color('#ffffff')
+        self.assertTrue(self.window.change_theme('cat'))
+        self.assertEqual(page.bitmap.toImage().pixelColor(0, 0).name(), '#ffffff')
+        self.assertTrue(self.window.change_pdf_follow_theme(True))
+        await_color(get_theme('cat').pdf_paper)
+        self.assertTrue(self.library.config()['pdf_follow_theme'])
+        self.assertFalse(self.errors)
+
+    def test_read_button_matches_mode_selector_height_in_every_theme(self):
+        self.window.show()
+        for theme in ('dark', 'cat', 'naruto'):
+            self.assertTrue(self.window.change_theme(theme))
+            self.app.processEvents()
+            self.assertEqual(self.window.analysis_mode.height(), 36)
+            self.assertEqual(self.window.read_button.height(), 36)
+            self.assertEqual(self.window.analysis_mode.y(), self.window.read_button.y())
 
     def test_settings_add_and_save_multiple_profiles(self):
         from PySide6.QtCore import QTimer

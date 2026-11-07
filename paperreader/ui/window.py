@@ -17,7 +17,7 @@ from paperreader.ui.markdown import MarkdownBrowser, MarkdownEditor, replace_cit
 from paperreader.ui.paper_list import PaperList
 from paperreader.ui.splitter import PaneSplitter
 from paperreader.services.themes import THEMES, get_theme
-from paperreader.ui.theme import ThemeHeader, apply_theme
+from paperreader.ui.theme import ThemeHeader, ThemeSwitch, apply_theme
 from paperreader.ui.composer import QuestionEdit
 from paperreader.ui.questions import QuestionNavigation
 from paperreader.ui.request_status import RequestStatus
@@ -68,6 +68,7 @@ class Window(QMainWindow):
         saved_config = self.library.config()
         self.profile_config = normalize_profiles(saved_config)
         self.profile_config["theme"] = get_theme(saved_config.get("theme")).identifier
+        self.profile_config["pdf_follow_theme"] = saved_config.get("pdf_follow_theme", True) is not False
         apply_theme(self.profile_config["theme"])
         self.setWindowIcon(QApplication.instance().windowIcon())
         self.config = active_profile(self.profile_config)
@@ -135,7 +136,8 @@ class Window(QMainWindow):
         nav.addWidget(button("−", lambda: self.zoom(.85), "NavButton"))
         self.zoom_label = QLabel("130%"); self.zoom_label.setObjectName("Muted"); nav.addWidget(self.zoom_label)
         nav.addWidget(button("＋", lambda: self.zoom(1.18), "NavButton")); rl.addWidget(nav_widget)
-        self.view = ContinuousPDF(); self.view.action.connect(self.pdf_action)
+        self.view = ContinuousPDF(); self.view.set_follow_theme(self.profile_config["pdf_follow_theme"])
+        self.view.action.connect(self.pdf_action)
         self.view.pageChanged.connect(self.reading_page_changed)
         self.view.zoomChanged.connect(lambda scale: self.zoom_label.setText(f"{scale:.0%}"))
         rl.addWidget(self.view, 1); split.addWidget(reader)
@@ -145,6 +147,7 @@ class Window(QMainWindow):
         head, row = header("学习工作台")
         self.analysis_mode = QComboBox(); self.analysis_mode.addItem("快速概要", "quick"); self.analysis_mode.addItem("精读报告", "deep")
         self.analysis_mode.setObjectName("AnalysisMode")
+        self.analysis_mode.setFixedHeight(36)
         mode_view = QListView(self.analysis_mode)
         mode_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.analysis_mode.setView(mode_view)
@@ -156,6 +159,7 @@ class Window(QMainWindow):
         row.addWidget(self.analysis_mode)
         self.read_button = button("阅读", self.toggle_reading, "Quiet")
         self.read_button.setProperty("analysisAction", True)
+        self.read_button.setFixedHeight(36)
         row.addWidget(self.read_button); wl.addWidget(head)
         tabs = QTabWidget(); self.summary = MarkdownBrowser(reading_style=True, allow_followup=True);
         self.summary.followUpRequested.connect(self.ask_about_analysis)
@@ -639,8 +643,13 @@ class Window(QMainWindow):
         theme_view.setMinimumHeight(rows_height + 2 * theme_view.frameWidth())
         theme_picker.setCurrentIndex(theme_picker.findData(self.profile_config["theme"]))
         appearance.addRow("界面主题", theme_picker)
+        pdf_follow = ThemeSwitch("跟随界面主题")
+        pdf_follow.setObjectName("PdfFollowTheme")
+        pdf_follow.setChecked(self.profile_config["pdf_follow_theme"])
+        pdf_follow.setToolTip("关闭后，PDF 页面始终显示白底黑字。")
+        appearance.addRow("论文背景", pdf_follow)
         general_layout.addLayout(appearance)
-        hint = QLabel("主题切换即时生效，并在下次启动时恢复。")
+        hint = QLabel("关闭论文背景跟随主题后，PDF 始终显示白底黑字。设置即时生效并保存在本机。")
         hint.setObjectName("Muted")
         general_layout.addWidget(hint)
         general_layout.addStretch()
@@ -676,7 +685,13 @@ class Window(QMainWindow):
                 with QSignalBlocker(theme_picker):
                     theme_picker.setCurrentIndex(theme_picker.findData(self.profile_config["theme"]))
 
+        def choose_pdf_follow(enabled):
+            if not self.change_pdf_follow_theme(enabled):
+                with QSignalBlocker(pdf_follow):
+                    pdf_follow.setChecked(self.profile_config["pdf_follow_theme"])
+
         theme_picker.currentIndexChanged.connect(choose_theme)
+        pdf_follow.toggled.connect(choose_pdf_follow)
         navigation.currentRowChanged.connect(show_page)
         navigation.setCurrentRow(0)
         if dialog.exec() and save_model:
@@ -706,6 +721,19 @@ class Window(QMainWindow):
             browser.refresh_theme()
         self.analysis_status.render_inline()
         self.render_chat()
+        return True
+
+    def change_pdf_follow_theme(self, enabled):
+        enabled = bool(enabled)
+        if enabled == self.profile_config["pdf_follow_theme"]:
+            return True
+        try:
+            self.library.save_config(dict(self.library.config(), pdf_follow_theme=enabled))
+        except Exception as exc:
+            self.error("论文背景设置保存失败：" + str(exc))
+            return False
+        self.profile_config["pdf_follow_theme"] = enabled
+        self.view.set_follow_theme(enabled)
         return True
 
     @property

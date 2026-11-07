@@ -1,0 +1,40 @@
+name: Build macOS app
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: macos-15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          architecture: arm64
+      - name: Build macOS app
+        run: bash build-macos.command
+      - name: Smoke test bundled app
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: dist/PaperReader.app/Contents/MacOS/PaperReader --smoke-test
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PaperReader-macOS-arm64
+          path: dist/PaperReader-macOS-arm64.zip
+          if-no-files-found: error
+      - name: Publish macOS package
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes || gh release view "$GITHUB_REF_NAME" >/dev/null
+          fi
+          gh release upload "$GITHUB_REF_NAME" dist/PaperReader-macOS-arm64.zip --clobber

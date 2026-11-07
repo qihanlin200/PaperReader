@@ -1,9 +1,9 @@
 """Deep-space desktop theme, shared by the main window and dialogs."""
 import re
 from pathlib import Path
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QLinearGradient, QMovie, QPainter, QPalette, QPixmap
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QCheckBox, QWidget
 from paperreader.services.themes import DEFAULT_THEME_ID, get_theme
 
 BACKGROUND = '#0b1019'
@@ -35,6 +35,63 @@ def theme_color(color, theme=None):
 def theme_css(css, theme=None):
     theme = theme or current_theme()
     return _HEX_COLOR.sub(lambda match: theme_color(match[0], theme), css)
+
+
+class ThemeSwitch(QCheckBox):
+    """An accessible check box painted as a theme-aware sliding switch."""
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMinimumHeight(36)
+        self.toggled.connect(lambda checked: self.setAccessibleDescription(
+            "已开启" if checked else "已关闭"))
+        self.setAccessibleDescription(self.status_text())
+
+    def status_text(self):
+        return "已开启" if self.isChecked() else "已关闭"
+
+    def sizeHint(self):
+        original = super().sizeHint()
+        label_width = self.fontMetrics().horizontalAdvance(self.text())
+        status_width = self.fontMetrics().horizontalAdvance("已开启")
+        return QSize(max(original.width(), 64 + label_width + 18 + status_width),
+                     max(original.height(), 36))
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        track = QRectF(2, (self.height() - 26) / 2, 48, 26)
+        if self.hasFocus():
+            painter.setPen(QColor(theme_color('#eaf4ff')))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(track.adjusted(-2, -2, 2, 2), 15, 15)
+        painter.setPen(QColor(theme_color('#66ddda' if self.isChecked() else '#91aabd')))
+        painter.setBrush(QColor(theme_color('#66ddda' if self.isChecked() else '#213243')))
+        painter.drawRoundedRect(track, 13, 13)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(theme_color('#092426' if self.isChecked() else '#eaf4ff')))
+        thumb_x = track.right() - 23 if self.isChecked() else track.left() + 3
+        painter.drawEllipse(QRectF(thumb_x, track.top() + 3, 20, 20))
+        label_color = self.palette().color(QPalette.ColorRole.Text)
+        if not self.isEnabled():
+            label_color.setAlpha(120)
+        painter.setPen(label_color)
+        label_x = 62
+        label_width = self.fontMetrics().horizontalAdvance(self.text())
+        painter.drawText(QRectF(label_x, 0, label_width + 2, self.height()),
+                         Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self.text())
+        status_font = painter.font()
+        status_font.setBold(True)
+        painter.setFont(status_font)
+        status_color = QColor(theme_color('#66ddda' if self.isChecked() else '#91aabd'))
+        if not self.isEnabled():
+            status_color.setAlpha(120)
+        painter.setPen(status_color)
+        painter.drawText(QRectF(label_x + label_width + 18, 0,
+                                max(0, self.width() - label_x - label_width - 18), self.height()),
+                         Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                         self.status_text())
 
 
 class ThemeHeader(QWidget):

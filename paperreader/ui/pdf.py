@@ -1,27 +1,31 @@
 from paperreader.services.lazy import fitz
+from paperreader.services.pdf_raster import rasterize_page_data, rasterize_pdf_file
 from paperreader.ui.selection import column_words, paragraph_words
 from paperreader.services.themes import get_theme
 from paperreader.ui.theme import current_theme
-from PySide6.QtCore import Qt, QRect, QRectF, QPoint, Signal, QEvent, QElapsedTimer
+from PySide6.QtCore import Qt, QRect, QRectF, QPoint, Signal, QEvent, QElapsedTimer, QObject
 from PySide6.QtGui import QPixmap, QImage, QPainter, QColor
 from PySide6.QtWidgets import QApplication, QLabel, QMenu
+from concurrent.futures import ProcessPoolExecutor
+from multiprocessing import get_context
+from pathlib import Path
 
 
-def themed_pdf_image(pix, theme):
-    from PIL import Image, ImageChops, ImageOps
+PINCH_ZOOM_GAIN = 1.5
 
-    source = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-    tinted = ImageOps.colorize(source.convert("L"), theme.pdf_ink, theme.pdf_paper)
-    red, green, blue = source.split()
-    maximum = ImageChops.lighter(ImageChops.lighter(red, green), blue)
-    minimum = ImageChops.darker(ImageChops.darker(red, green), blue)
-    # Keep saturated chart colors and blend the transition at antialiased edges.
-    chroma = ImageChops.subtract(maximum, minimum).point(
-        [min(255, max(0, (level - 8) * 6)) for level in range(256)]
-    )
-    result = Image.composite(source, tinted, chroma)
-    return QImage(result.tobytes(), pix.width, pix.height, pix.width * 3,
-                  QImage.Format.Format_RGB888).copy()
+
+_raster_pool = None
+
+
+def raster_pool():
+    global _raster_pool
+    if _raster_pool is None:
+        _raster_pool = ProcessPoolExecutor(max_workers=1, mp_context=get_context('spawn'))
+    return _raster_pool
+
+
+class RasterBridge(QObject):
+    finished = Signal(object)
 
 
 class PageView(QLabel):
@@ -44,38 +48,42 @@ class PageView(QLabel):
         self.selection = QRect()
         self.marks = []
         self.words = []
+        self.words_ready = False
         self.citation_rects = []
         self.bitmap = None
         self.render_scale = None
+        self.fast_preview = False
 
-    def display(self, page, marks):
+    def display(self, page, marks, paper_colors=None):
+        if paper_colors is None:
+            theme = get_theme(current_theme())
+            paper_colors = theme.pdf_paper, theme.pdf_ink
+        samples, width, height, stride, density = rasterize_page_data(
+            page, self.scale, self.devicePixelRatioF(), *paper_colors)
+        image = QImage(samples, width, height, stride, QImage.Format.Format_RGB888).copy()
+        self.display_image(page, marks, image, density)
+
+    def display_image(self, page, marks, image, density):
         self.page, self.marks = page, marks
-        self.words = page.get_text("words", sort=True)
-        self.column_cache = None
+        if not self.words_ready:
+            self.words = page.get_text("words", sort=True)
+            self.words_ready = True
+            self.column_cache = None
         self.selection = QRect()
         self.click_selection = None
         self.anchor = self.endpoint = None
-        # Qt widget geometry uses logical pixels; PDF raster needs physical screen pixels.
-        from math import sqrt
-        target_density = max(1.5, self.devicePixelRatioF())
-        logical_area = max(1, page.rect.width * page.rect.height * self.scale**2)
-        density = min(target_density, sqrt(24_000_000 / logical_area))
-        pix = page.get_pixmap(matrix=fitz.Matrix(self.scale*density, self.scale*density), alpha=False)
-        theme = get_theme(current_theme())
-        if (theme.pdf_paper, theme.pdf_ink) == ("#ffffff", "#000000"):
-            image = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format.Format_RGB888).copy()
-        else:
-            image = themed_pdf_image(pix, theme)
         bitmap = QPixmap.fromImage(image)
         bitmap.setDevicePixelRatio(density)
         super().clear()
         self.bitmap = bitmap
         self.render_scale = self.scale
+        self.fast_preview = False
         self.setFixedSize(ceil(page.rect.width*self.scale), ceil(page.rect.height*self.scale))
         self.update()
 
     def clear(self):
         self.bitmap = None
+        self.fast_preview = False
         self.marks = []
         self.click_selection = None
         self.double_click_timer.invalidate()
@@ -232,7 +240,7 @@ class PageView(QLabel):
         super().paintEvent(event)
         painter = QPainter(self)
         if self.bitmap is not None:
-            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, not self.fast_preview)
             painter.drawPixmap(QRectF(self.rect()), self.bitmap, QRectF(self.bitmap.rect()))
         painter.setPen(Qt.PenStyle.NoPen)
         def draw_rect(rect):
@@ -270,6 +278,7 @@ class ContinuousPDF(QScrollArea):
         self.verticalScrollBar().setSingleStep(45)
         self.doc = None
         self.scale = 1.3
+        self.follow_theme = True
         self.pages = []
         self.offsets = []
         self.marks = []
@@ -279,30 +288,33 @@ class ContinuousPDF(QScrollArea):
         self.render_timer = QTimer(self)
         self.render_timer.setSingleShot(True)
         self.render_timer.timeout.connect(self.render_next)
+        self.render_generation = 0
+        self.render_job = None
+        self.render_bridge = RasterBridge(self)
+        self.render_bridge.finished.connect(self.apply_render_result)
         self.verticalScrollBar().valueChanged.connect(self.scrolled)
         self.viewport().installEventFilter(self)
         self.viewport().grabGesture(Qt.GestureType.PinchGesture)
-        self.pending_zoom = 1.0
-        self.zoom_anchor = None
-        self.zoom_timer = QTimer(self)
-        self.zoom_timer.setSingleShot(True); self.zoom_timer.setInterval(32)
-        self.zoom_timer.timeout.connect(self.apply_pending_zoom)
+        self.gesture_active = False
+        self.pinch_source = None
         self.settle_timer = QTimer(self)
         self.settle_timer.setSingleShot(True); self.settle_timer.setInterval(180)
-        self.settle_timer.timeout.connect(self.scrolled)
+        self.settle_timer.timeout.connect(self.finish_zoom_preview)
         self.resizing_pages = False
 
     def clear_document(self):
-        self.render_timer.stop(); self.zoom_timer.stop(); self.settle_timer.stop()
-        self.queue = []; self.pending_zoom = 1.0
+        self.render_timer.stop(); self.settle_timer.stop()
+        self.render_generation += 1
+        self.queue = []; self.gesture_active = False; self.pinch_source = None
         self.pages = []; self.offsets = []; self.current = -1; self.doc = None; self.marks = []
         self.citation_page = None
         self.setWidget(QWidget())
 
     def load(self, doc, page=0):
         if doc is not self.doc:
-            self.zoom_timer.stop(); self.settle_timer.stop(); self.pending_zoom = 1.0
+            self.settle_timer.stop(); self.gesture_active = False; self.pinch_source = None
         self.render_timer.stop(); self.queue = []
+        self.render_generation += 1
         self.doc = doc; self.pages = []; self.offsets = []; self.current = -1
         self.citation_page = None
         container = QWidget(); container.installEventFilter(self); layout = QVBoxLayout(container)
@@ -379,15 +391,71 @@ class ContinuousPDF(QScrollArea):
         if self.queue and not self.render_timer.isActive(): self.render_timer.start(0)
 
     def render_next(self):
-        if not self.queue or self.doc is None or self.settle_timer.isActive(): return
+        if not self.queue or self.doc is None or self.settle_timer.isActive() or self.render_job is not None: return
         index = self.queue.pop(0)
         view = self.pages[index]
+        path = getattr(self.doc, 'name', '')
+        if view.bitmap is not None and path and Path(path).is_file():
+            paper_color, ink_color = self.pdf_colors()
+            future = raster_pool().submit(rasterize_pdf_file, path, index, self.scale,
+                                          view.devicePixelRatioF(), paper_color, ink_color)
+            self.render_job = future
+            bridge = self.render_bridge
+            generation, scale = self.render_generation, self.scale
+            def finished(result):
+                try: bridge.finished.emit((generation, index, scale, result))
+                except RuntimeError: pass  # Window closed before the process finished.
+            future.add_done_callback(finished)
+            return
         anchor, endpoint, click_selection = view.anchor, view.endpoint, view.click_selection
-        view.display(self.doc[index], [m for m in self.marks if m['page'] == index])
+        view.display(self.doc[index], [m for m in self.marks if m['page'] == index], self.pdf_colors())
         view.anchor, view.endpoint, view.click_selection = anchor, endpoint, click_selection
         if self.queue: self.render_timer.start(0)
 
+    def apply_render_result(self, result):
+        generation, index, scale, future = result
+        self.render_job = None
+        if (self.doc is not None and generation == self.render_generation
+                and scale == self.scale and index < len(self.pages)
+                and self.page_is_visible(index)):
+            try:
+                samples, width, height, stride, density = future.result()
+            except Exception:
+                pass  # Retain the scaled preview if background rendering fails.
+            else:
+                image = QImage(samples, width, height, stride, QImage.Format.Format_RGB888).copy()
+                view = self.pages[index]
+                anchor, endpoint, click_selection = view.anchor, view.endpoint, view.click_selection
+                view.display_image(self.doc[index], [m for m in self.marks if m['page'] == index],
+                                   image, density)
+                view.anchor, view.endpoint, view.click_selection = anchor, endpoint, click_selection
+        if self.queue and not self.settle_timer.isActive(): self.render_timer.start(0)
+
+    def page_is_visible(self, index):
+        top = self.verticalScrollBar().value()
+        first = max(0, bisect_right(self.offsets, top+40)-1)
+        last = min(len(self.pages)-1, bisect_right(self.offsets, top+self.viewport().height()))
+        return max(0, first-1) <= index <= min(len(self.pages)-1, last+1)
+
     def refresh_theme(self):
+        if self.follow_theme:
+            self.refresh_pdf_colors()
+
+    def pdf_colors(self):
+        if not self.follow_theme:
+            return "#ffffff", "#000000"
+        theme = get_theme(current_theme())
+        return theme.pdf_paper, theme.pdf_ink
+
+    def set_follow_theme(self, enabled):
+        enabled = bool(enabled)
+        if enabled == self.follow_theme:
+            return
+        self.follow_theme = enabled
+        self.refresh_pdf_colors()
+
+    def refresh_pdf_colors(self):
+        self.render_generation += 1
         for view in self.pages:
             view.render_scale = None
         self.scrolled()
@@ -399,39 +467,62 @@ class ContinuousPDF(QScrollArea):
                 view.marks = [m for m in marks if m['page'] == index]
                 view.update()
 
-    def queue_zoom(self, factor, anchor):
-        if self.doc is None or factor <= 0: return
-        self.pending_zoom *= factor
-        self.zoom_anchor = anchor
-        if not self.zoom_timer.isActive(): self.zoom_timer.start()
+    def finish_zoom_preview(self):
+        self.gesture_active = False; self.pinch_source = None
+        for view in self.pages:
+            if view.fast_preview and view.render_scale == self.scale:
+                view.fast_preview = False
+                view.update()
+        self.scrolled()
 
-    def apply_pending_zoom(self):
-        factor = self.pending_zoom; self.pending_zoom = 1.0
-        self.zoom(factor, self.zoom_anchor)
+    def end_zoom_gesture(self):
+        self.gesture_active = False; self.pinch_source = None
+        if self.settle_timer.isActive():
+            self.settle_timer.start(90)
 
     def eventFilter(self, watched, event):
         if event.type() == QEvent.Type.DevicePixelRatioChange and isinstance(watched, PageView) and watched.page is not None:
             anchor, endpoint, click_selection = watched.anchor, watched.endpoint, watched.click_selection
-            watched.display(watched.page, watched.marks)
+            watched.display(watched.page, watched.marks, self.pdf_colors())
             watched.anchor, watched.endpoint, watched.click_selection = anchor, endpoint, click_selection
         if event.type() == QEvent.Type.NativeGesture:
             kind = event.gestureType()
             if kind == Qt.NativeGestureType.ZoomNativeGesture:
-                anchor = self.viewport().mapFromGlobal(event.globalPosition().toPoint())
-                self.queue_zoom(max(.1, 1.0 + event.value()), anchor)
+                if abs(event.value()) > .00001 and self.pinch_source in (None, 'native'):
+                    self.pinch_source = 'native'
+                    anchor = self.viewport().mapFromGlobal(event.globalPosition().toPoint())
+                    self.gesture_active = True
+                    self.zoom(max(.1, 1.0 + event.value()) ** PINCH_ZOOM_GAIN, anchor)
                 event.accept(); return True
-            if kind in (Qt.NativeGestureType.BeginNativeGesture, Qt.NativeGestureType.EndNativeGesture):
+            if kind == Qt.NativeGestureType.BeginNativeGesture:
+                self.gesture_active = True
+                event.accept(); return True
+            if kind == Qt.NativeGestureType.EndNativeGesture:
+                self.end_zoom_gesture()
                 event.accept(); return True
         if event.type() == QEvent.Type.Wheel and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            delta = event.pixelDelta().y() or event.angleDelta().y()
-            self.queue_zoom(2 ** (delta/480), self.viewport().mapFromGlobal(event.globalPosition().toPoint()))
+            pixel_delta = event.pixelDelta().y()
+            delta = pixel_delta or event.angleDelta().y()
+            if delta and self.pinch_source in (None, 'wheel'):
+                self.pinch_source = 'wheel'
+                gain = PINCH_ZOOM_GAIN if pixel_delta or self.gesture_active else 1.0
+                self.zoom(2 ** (delta*gain/480),
+                          self.viewport().mapFromGlobal(event.globalPosition().toPoint()))
             event.accept(); return True
         if event.type() == QEvent.Type.Gesture:
             pinch = event.gesture(Qt.GestureType.PinchGesture)
             if pinch:
+                # macOS may deliver Qt pinch, native magnification, or Ctrl+wheel.
+                # Use whichever produces the first zoom update for this gesture.
                 previous = pinch.lastScaleFactor()
                 factor = pinch.scaleFactor()/previous if previous else 1.0
-                self.queue_zoom(factor, pinch.centerPoint().toPoint())
+                if abs(factor-1.0) > .00001 and self.pinch_source in (None, 'qt'):
+                    self.pinch_source = 'qt'
+                    self.gesture_active = True
+                    self.zoom(factor ** PINCH_ZOOM_GAIN, pinch.centerPoint().toPoint())
+                if self.pinch_source == 'qt' and pinch.state() in (
+                        Qt.GestureState.GestureFinished, Qt.GestureState.GestureCanceled):
+                    self.end_zoom_gesture()
                 event.accept(); return True
         return super().eventFilter(watched, event)
 
@@ -447,9 +538,9 @@ class ContinuousPDF(QScrollArea):
         fraction_y = (content_point.y()-self.offsets[index]) / max(1, view.height())
         fraction_x = (content_point.x()-view.x()) / max(1, view.width())
         self.render_timer.stop()
-        self.settle_timer.start()
+        self.render_generation += 1
+        self.settle_timer.start(500 if self.gesture_active else 180)
         self.resizing_pages = True
-        self.viewport().setUpdatesEnabled(False)
         ratio = new_scale/self.scale
         self.scale = new_scale
         self.zoomChanged.emit(new_scale)
@@ -460,6 +551,7 @@ class ContinuousPDF(QScrollArea):
             page_view.scale = new_scale
             width, height = page_view.base_size
             page_view.setFixedSize(ceil(width*new_scale), ceil(height*new_scale))
+            if page_view.bitmap is not None: page_view.fast_preview = True
             if page_view.anchor is not None: page_view.anchor = page_view.anchor*ratio
             if page_view.endpoint is not None: page_view.endpoint = page_view.endpoint*ratio
             page_view.update()
@@ -470,7 +562,6 @@ class ContinuousPDF(QScrollArea):
         self.verticalScrollBar().setValue(self.offsets[index] + int(fraction_y*view.height()) - anchor.y())
         self.horizontalScrollBar().setValue(view.x() + int(fraction_x*view.width()) - anchor.x())
         self.resizing_pages = False
-        self.viewport().setUpdatesEnabled(True)
         self.scrolled()
 
     def resizeEvent(self, event):
