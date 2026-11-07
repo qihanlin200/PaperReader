@@ -46,7 +46,9 @@ def main():
                 elif pages[0].render_scale == window.view.scale:
                     app.exit(0 if not app.windowIcon().isNull() else 2)
             check.timeout.connect(finish_smoke); check.start(100)
-            QTimer.singleShot(15000, lambda: app.exit(2))
+            # A fresh CI runner may spend several seconds building Matplotlib's
+            # font cache before the bundled window can render its first page.
+            QTimer.singleShot(60000, lambda: app.exit(2))
             result = app.exec(); window.close(); library.db.close()
             return result
     root = Path(user_data_dir("PaperReader", appauthor=False))

@@ -14,6 +14,6 @@ exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='PaperReader', debug=F
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name='PaperReader')
 app = BUNDLE(coll, name='PaperReader.app', icon=str(root/'paperreader/assets/PaperReader.icns'),
     bundle_identifier='com.paperreader.desktop', info_plist={
-        'CFBundleDisplayName':'PaperReader', 'CFBundleShortVersionString':'0.1.0',
+        'CFBundleDisplayName':'PaperReader', 'CFBundleShortVersionString':'0.1.1',
         'CFBundleVersion':'1', 'NSHighResolutionCapable':True,
         'LSMinimumSystemVersion':'13.0', 'NSPrincipalClass':'NSApplication'})
