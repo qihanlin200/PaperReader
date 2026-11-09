@@ -1,5 +1,5 @@
 """Click to collapse a pane or drag horizontally to resize it."""
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QSplitter, QSplitterHandle
 from paperreader.ui.theme import theme_color
@@ -70,6 +70,8 @@ class PaneHandle(QSplitterHandle):
 
 
 class PaneSplitter(QSplitter):
+    paneToggled = Signal(int)
+
     def __init__(self, parent=None):
         super().__init__(Qt.Orientation.Horizontal, parent)
         self.setHandleWidth(14)
@@ -92,6 +94,11 @@ class PaneSplitter(QSplitter):
             sizes[recipient] += freed
         else:
             restored = self.previous_widths.get(index, 300)
-            # Ask Qt to redistribute available space while retaining collapsed panes.
+            recipient = next((i for i in range(index+1, len(sizes)) if sizes[i] > 0), None)
+            if recipient is None:
+                recipient = next((i for i in range(index-1, -1, -1) if sizes[i] > 0), None)
+            if recipient is None: return
+            sizes[recipient] = max(0, sizes[recipient] - restored)
             sizes[index] = restored
         self.setSizes(sizes)
+        self.paneToggled.emit(index)

@@ -1,12 +1,14 @@
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+import json
 import tempfile
 import time
 import unittest
 from unittest.mock import patch
 import fitz
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QPushButton
 from paperreader.services.library import Library
+from paperreader.ui.paper_list import PAPER_ID_ROLE, GROUP_ID_ROLE, PAPER_MIME, GROUP_MIME
 from paperreader.ui.window import Window
 
 
@@ -61,6 +63,345 @@ class StreamingUITests(unittest.TestCase):
         self.window.notes.setPlainText('# Note\n\n**Saved**'); self.window.save_notes()
         self.assertIn('<h1', self.window.notes.preview.document().toHtml())
         self.assertEqual(self.library.all()[0]['notes'], '# Note\n\n**Saved**')
+        self.assertFalse(self.errors)
+
+    def test_library_search_and_group_rows(self):
+        doc = fitz.open(); doc.new_page().insert_text((72, 72), 'Second paper')
+        other = self.library.import_pdf(doc.tobytes(), 'Other study', 'https://arxiv.org/abs/1234.5678')
+        doc.close()
+        other['title'] = 'Other study'
+        self.library.save(other)
+        self.window.reload(self.paper['id'])
+        self.assertEqual(self.window.list.count(), 2)
+
+        self.window.paper_search.setText('other')
+        self.assertEqual(self.window.list.count(), 2)
+        self.window.paper_search.returnPressed.emit()
+        self.assertEqual(self.window.list.count(), 1)
+        self.assertEqual(self.window.papers[0]['id'], other['id'])
+        self.window.paper_search.clear()
+        self.assertEqual(self.window.list.count(), 2)
+
+        group_id = self.library.create_group('重点论文')
+        self.window.move_paper_to_group(other, group_id)
+        self.assertEqual(self.window.list.count(), 4)
+        self.assertEqual(self.window.list.item(0).data(GROUP_ID_ROLE), group_id)
+        self.assertEqual(self.window.list.item(1).data(PAPER_ID_ROLE), other['id'])
+        self.assertEqual(self.window.list.item(2).data(GROUP_ID_ROLE), -1)
+        self.assertEqual(self.window.list.item(3).data(PAPER_ID_ROLE), self.paper['id'])
+        self.window.open_paper(0)
+        self.assertEqual(self.window.paper['id'], self.paper['id'])
+        self.window.open_paper(1)
+        self.assertEqual(self.window.paper['id'], other['id'])
+        self.window.show(); self.app.processEvents()
+        add_group = self.window.findChild(QPushButton, 'AddPaperGroup')
+        self.assertEqual(self.window.paper_search.height(), add_group.height())
+        self.assertEqual(self.window.paper_search.geometry().top(), add_group.geometry().top())
+        self.assertFalse(self.errors)
+
+    def test_delete_group_dialog_moves_papers_to_ungrouped(self):
+        from PySide6.QtCore import QTimer
+        group_id = self.library.create_group('待整理')
+        self.library.set_group(self.paper['id'], group_id)
+        self.window.reload(self.paper['id'], reopen=False)
+
+        def choose_keep():
+            dialog = self.app.activeModalWidget()
+            next(button for button in dialog.buttons() if button.text() == '仅删除分组').click()
+
+        QTimer.singleShot(0, choose_keep)
+        self.window.delete_paper_group(self.library.list_groups()[0])
+        self.assertEqual(self.library.list_groups(), [])
+        self.assertIsNone(self.library.list_metadata()[0]['group_id'])
+        self.assertTrue(self.library.pdf_path(self.paper).exists())
+        self.assertEqual(self.window.paper['id'], self.paper['id'])
+        self.assertFalse(self.errors)
+
+    def test_click_group_header_collapses_and_expands_without_closing_paper(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        group_id = self.library.create_group('阅读计划')
+        self.library.set_group(self.paper['id'], group_id)
+        self.window.reload(self.paper['id'], reopen=False)
+        self.window.show(); self.app.processEvents()
+        self.assertEqual(self.window.list.count(), 3)
+
+        def click_group():
+            header = self.window.list.item(0)
+            center = self.window.list.visualItemRect(header).center()
+            QTest.mouseClick(self.window.list.viewport(), Qt.MouseButton.LeftButton, pos=center)
+            self.app.processEvents()
+
+        click_group()
+        self.assertEqual(self.window.list.count(), 2)
+        self.assertTrue(self.window.list.item(0).text().startswith('▸'))
+        self.assertEqual(self.window.paper['id'], self.paper['id'])
+        self.window.reload(self.paper['id'], reopen=False)
+        self.assertEqual(self.window.list.count(), 2)
+        self.window.paper_search.setText(self.window.paper['title'])
+        self.window.paper_search.returnPressed.emit()
+        self.assertEqual(self.window.list.count(), 2)
+        self.window.paper_search.clear()
+        self.assertEqual(self.window.list.count(), 2)
+        click_group()
+        self.assertEqual(self.window.list.count(), 3)
+        self.assertTrue(self.window.list.item(0).text().startswith('▾'))
+        self.assertEqual(self.window.paper['id'], self.paper['id'])
+
+    def test_fixed_work_rail_controls_and_library_restore(self):
+        from PySide6.QtWidgets import QLabel
+        self.window.show(); self.app.processEvents()
+        self.assertEqual(self.window.windowTitle(), 'PaperReader · 读起来不烧心')
+        self.assertEqual(self.window.work_rail.width(), 48)
+        controls = (self.window.library_rail_button, self.window.import_pdf_button,
+                    self.window.import_link_button)
+        self.assertEqual([control.size().width() for control in controls], [38, 38, 38])
+        centers = [control.geometry().center() for control in controls]
+        self.assertEqual([point.x() for point in centers], [centers[0].x()] * 3)
+        self.assertEqual(centers[1].y() - centers[0].y(), centers[2].y() - centers[1].y())
+        self.assertGreater(self.window.splitter.sizes()[0], 0)
+        self.assertTrue(self.window.library_rail_button.property('active'))
+        self.assertIsNone(self.window.findChild(QLabel, 'LibraryRailHint'))
+        self.assertIsNotNone(self.window.findChild(QLabel, 'BrandLabel'))
+        self.assertIsNone(self.window.findChild(QPushButton, 'Brand'))
+        self.assertIsNone(self.window.findChild(QLabel, 'BrandSlogan'))
+        self.assertEqual(self.window.reader_paper_title.full_text, self.paper['title'])
+        self.assertNotIn(self.paper['title'], [label.text() for label in self.window.top_bar.findChildren(QLabel)])
+        long_title = 'An unusually long paper title ' * 12
+        self.window.set_reader_title(long_title)
+        self.app.processEvents()
+        self.assertEqual(self.window.reader_paper_title.toolTip(), long_title)
+        self.assertTrue(self.window.reader_paper_title.text().endswith('…'))
+
+        with patch('paperreader.ui.window.QFileDialog.getOpenFileNames', return_value=([], '')) as choose_pdf:
+            self.window.import_pdf_button.click()
+            choose_pdf.assert_called_once()
+        with patch('paperreader.ui.window.QInputDialog.exec', return_value=0) as choose_link:
+            self.window.import_link_button.click()
+            choose_link.assert_called_once()
+        with patch('paperreader.ui.window.SettingsDialog.exec', return_value=0) as settings:
+            self.window.settings_rail_button.click()
+            settings.assert_called_once()
+
+        expanded_sizes = self.window.splitter.sizes()
+        self.window.library_rail_button.click(); self.app.processEvents()
+        collapsed_sizes = self.window.splitter.sizes()
+        self.assertEqual(self.window.splitter.sizes()[0], 0)
+        self.assertTrue(self.window.work_rail.isVisible())
+        self.assertFalse(self.window.library_rail_button.property('active'))
+        self.window.library_rail_button.click(); self.app.processEvents()
+        self.assertEqual(self.window.splitter.sizes(), expanded_sizes)
+        self.assertTrue(self.window.library_rail_button.property('active'))
+        self.window.library_rail_button.click(); self.app.processEvents()
+        self.assertEqual(self.window.splitter.sizes(), collapsed_sizes)
+        self.assertFalse(self.errors)
+
+    def test_drag_papers_onto_group_and_back_to_ungrouped(self):
+        from PySide6.QtCore import QMimeData, QPointF, Qt
+        from PySide6.QtGui import QDragLeaveEvent, QDragMoveEvent, QDropEvent
+        doc = fitz.open(); doc.new_page().insert_text((72, 72), 'Another paper')
+        other = self.library.import_pdf(doc.tobytes(), 'Another paper'); doc.close()
+        group_id = self.library.create_group('研究分组')
+        self.window.reload(self.paper['id'], reopen=False)
+        self.window.show(); self.app.processEvents()
+
+        dragged = []
+        class FakeDrag:
+            def __init__(self, _source): pass
+            def setMimeData(self, mime): self.mime = mime
+            def setPixmap(self, pixmap): self.pixmap = pixmap
+            def setHotSpot(self, point): self.hotspot = point
+            def exec(self, action):
+                dragged.append((bytes(self.mime.data(PAPER_MIME)), action, self.pixmap, self.hotspot))
+
+        self.window.list.setCurrentRow(self.window.row_for_paper(self.paper['id']))
+        with patch('paperreader.ui.paper_list.QDrag', FakeDrag):
+            self.window.list.startDrag(Qt.DropAction.MoveAction)
+        self.assertEqual(dragged[0][:2], (json.dumps([self.paper['id']]).encode('ascii'), Qt.DropAction.MoveAction))
+        preview, hotspot = dragged[0][2:]
+        self.assertFalse(preview.isNull())
+        self.assertGreater(preview.width(), 0)
+        self.assertGreater(preview.height(), 0)
+        self.assertGreaterEqual(hotspot.x(), 0)
+        self.assertGreaterEqual(hotspot.y(), 0)
+
+        mime = QMimeData(); mime.setData(PAPER_MIME, json.dumps([self.paper['id']]).encode('ascii'))
+        target = self.window.list.visualItemRect(self.window.list.item(0)).center()
+        move = QDragMoveEvent(target, Qt.DropAction.MoveAction, mime,
+                              Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+        self.window.list.dragMoveEvent(move)
+        self.assertTrue(move.isAccepted())
+        self.assertEqual(self.window.list.drop_target_row, 0)
+        self.window.list.dragLeaveEvent(QDragLeaveEvent())
+        self.assertEqual(self.window.list.drop_target_row, -1)
+
+        def drop(identifier, target_row):
+            mime = QMimeData(); mime.setData(PAPER_MIME, json.dumps([identifier]).encode('ascii'))
+            point = self.window.list.visualItemRect(self.window.list.item(target_row)).center()
+            event = QDropEvent(QPointF(point), Qt.DropAction.MoveAction, mime,
+                               Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+            self.window.list.dropEvent(event)
+            self.assertTrue(event.isAccepted())
+
+        drop(self.paper['id'], 0)
+        self.assertEqual(next(p for p in self.library.list_metadata() if p['id'] == self.paper['id'])['group_id'], group_id)
+        self.assertEqual(self.window.list.item(1).data(PAPER_ID_ROLE), self.paper['id'])
+        # Dropping on a paper also targets its containing group.
+        drop(other['id'], 1)
+        self.assertEqual(next(p for p in self.library.list_metadata() if p['id'] == other['id'])['group_id'], group_id)
+        # The empty default group remains a drop target.
+        default_row = next(i for i in range(self.window.list.count())
+                           if self.window.list.item(i).data(GROUP_ID_ROLE) == -1)
+        drop(self.paper['id'], default_row)
+        self.assertIsNone(next(p for p in self.library.list_metadata() if p['id'] == self.paper['id'])['group_id'])
+        self.window.collapsed_groups.add(group_id)
+        self.window.reload(self.paper['id'], reopen=False)
+        self.assertEqual(self.window.list.count(), 3)
+        drop(self.paper['id'], 0)
+        self.assertNotIn(group_id, self.window.collapsed_groups)
+        self.assertGreaterEqual(self.window.row_for_paper(self.paper['id']), 0)
+        self.assertFalse(self.errors)
+
+    def test_drag_group_header_reorders_without_collapsing(self):
+        from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, Qt
+        from PySide6.QtGui import QDragMoveEvent, QDropEvent, QMouseEvent
+        from PySide6.QtTest import QTest
+        ids = [self.library.create_group(name) for name in ('第一组', '第二组', '第三组')]
+        self.window.reload(self.paper['id'], reopen=False)
+        self.window.show(); self.app.processEvents()
+        header = self.window.list.item(0)
+        start = self.window.list.visualItemRect(header).center()
+        dragged = []
+
+        class FakeDrag:
+            def __init__(self, _source): pass
+            def setMimeData(self, mime): self.mime = mime
+            def setPixmap(self, pixmap): self.pixmap = pixmap
+            def setHotSpot(self, point): self.hotspot = point
+            def exec(self, _action): dragged.append((bytes(self.mime.data(GROUP_MIME)), self.pixmap))
+
+        with patch('paperreader.ui.paper_list.QDrag', FakeDrag):
+            QTest.mousePress(self.window.list.viewport(), Qt.MouseButton.LeftButton, pos=start)
+            moved = start + QPoint(0, self.app.startDragDistance() + 5)
+            event = QMouseEvent(QEvent.Type.MouseMove, QPointF(moved),
+                                QPointF(self.window.list.viewport().mapToGlobal(moved)),
+                                Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton,
+                                Qt.KeyboardModifier.NoModifier)
+            self.window.list.mouseMoveEvent(event)
+            QTest.mouseRelease(self.window.list.viewport(), Qt.MouseButton.LeftButton, pos=moved)
+        self.assertEqual(dragged[0][0], str(ids[0]).encode('ascii'))
+        self.assertFalse(dragged[0][1].isNull())
+        self.assertFalse(self.window.collapsed_groups)
+
+        mime = QMimeData(); mime.setData(GROUP_MIME, str(ids[0]).encode('ascii'))
+        target_rect = self.window.list.visualItemRect(self.window.list.item(1))
+        target = QPoint(target_rect.center().x(), target_rect.bottom() - 2)
+        move = QDragMoveEvent(target, Qt.DropAction.MoveAction, mime,
+                              Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+        self.window.list.dragMoveEvent(move)
+        self.assertTrue(move.isAccepted())
+        self.assertEqual(self.window.list.drop_target_kind, 'group')
+        self.assertTrue(self.window.list.drop_after)
+        drop = QDropEvent(QPointF(target), Qt.DropAction.MoveAction, mime,
+                          Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+        self.window.list.dropEvent(drop)
+        self.assertTrue(drop.isAccepted())
+        self.assertEqual([group['id'] for group in self.library.list_groups()], [ids[1], ids[0], ids[2]])
+        self.assertEqual(self.window.list.item(0).data(GROUP_ID_ROLE), ids[1])
+        self.assertFalse(self.errors)
+
+    def test_ctrl_and_shift_select_multiple_papers_for_one_drag(self):
+        from PySide6.QtCore import QMimeData, QPointF, Qt
+        from PySide6.QtGui import QDropEvent
+        from PySide6.QtTest import QTest
+        papers = [self.paper]
+        for title in ('Second paper', 'Third paper'):
+            doc = fitz.open(); doc.new_page().insert_text((72, 72), title)
+            papers.append(self.library.import_pdf(doc.tobytes(), title)); doc.close()
+        group_id = self.library.create_group('批量整理')
+        self.window.reload(self.paper['id'], reopen=False)
+        self.window.show(); self.app.processEvents()
+
+        def click(paper, modifier=Qt.KeyboardModifier.NoModifier):
+            row = self.window.row_for_paper(paper['id'])
+            point = self.window.list.visualItemRect(self.window.list.item(row)).center()
+            QTest.mouseClick(self.window.list.viewport(), Qt.MouseButton.LeftButton, modifier, pos=point)
+            self.app.processEvents()
+
+        def selected_ids():
+            return {item.data(PAPER_ID_ROLE) for item in self.window.list.selectedItems()}
+
+        click(papers[0])
+        click(papers[2], Qt.KeyboardModifier.ControlModifier)
+        self.assertEqual(selected_ids(), {papers[0]['id'], papers[2]['id']})
+        self.assertEqual(self.window.paper['id'], papers[0]['id'])
+        with patch('paperreader.ui.paper_list.MACOS', True):
+            click(papers[1], Qt.KeyboardModifier.MetaModifier)
+            self.assertEqual(selected_ids(), {paper['id'] for paper in papers})
+            click(papers[1], Qt.KeyboardModifier.MetaModifier)
+            self.assertEqual(selected_ids(), {papers[0]['id'], papers[2]['id']})
+        self.assertEqual(self.window.paper['id'], papers[0]['id'])
+
+        click(papers[0])
+        click(papers[2], Qt.KeyboardModifier.ShiftModifier)
+        self.assertEqual(selected_ids(), {paper['id'] for paper in papers})
+        self.assertEqual(self.window.paper['id'], papers[0]['id'])
+
+        dragged = []
+        class FakeDrag:
+            def __init__(self, _source): pass
+            def setMimeData(self, mime): self.mime = mime
+            def setPixmap(self, pixmap): self.pixmap = pixmap
+            def setHotSpot(self, point): self.hotspot = point
+            def exec(self, _action): dragged.append((json.loads(bytes(self.mime.data(PAPER_MIME))), self.pixmap))
+
+        drag_row = self.window.row_for_paper(papers[2]['id'])
+        drag_point = self.window.list.visualItemRect(self.window.list.item(drag_row)).center()
+        QTest.mousePress(self.window.list.viewport(), Qt.MouseButton.LeftButton, pos=drag_point)
+        self.assertEqual(selected_ids(), {paper['id'] for paper in papers})
+        self.assertEqual(self.window.paper['id'], papers[0]['id'])
+        with patch('paperreader.ui.paper_list.QDrag', FakeDrag):
+            self.window.list.startDrag(Qt.DropAction.MoveAction)
+        QTest.mouseRelease(self.window.list.viewport(), Qt.MouseButton.LeftButton, pos=drag_point)
+        self.assertEqual(set(dragged[0][0]), {paper['id'] for paper in papers})
+        self.assertFalse(dragged[0][1].isNull())
+
+        mime = QMimeData()
+        mime.setData(PAPER_MIME, json.dumps([paper['id'] for paper in papers]).encode('ascii'))
+        target = self.window.list.visualItemRect(self.window.list.item(0)).center()
+        event = QDropEvent(QPointF(target), Qt.DropAction.MoveAction, mime,
+                           Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+        self.window.list.dropEvent(event)
+        self.assertTrue(event.isAccepted())
+        self.assertEqual({paper['group_id'] for paper in self.library.list_metadata()}, {group_id})
+        self.assertFalse(self.errors)
+
+    def test_create_group_dialog_has_wider_input(self):
+        from PySide6.QtWidgets import QInputDialog
+
+        def check_width(dialog):
+            self.assertGreaterEqual(dialog.minimumWidth(), 620)
+            return 0
+
+        with patch.object(QInputDialog, 'exec', check_width):
+            self.window.create_paper_group()
+
+    def test_delete_group_dialog_can_purge_current_paper(self):
+        from PySide6.QtCore import QTimer
+        group_id = self.library.create_group('彻底清理')
+        self.library.set_group(self.paper['id'], group_id)
+        self.window.reload(self.paper['id'], reopen=False)
+
+        def choose_purge():
+            dialog = self.app.activeModalWidget()
+            next(button for button in dialog.buttons() if button.text() == '删除分组及全部论文').click()
+
+        QTimer.singleShot(0, choose_purge)
+        self.window.delete_paper_group(self.library.list_groups()[0])
+        self.assertEqual(self.library.list_groups(), [])
+        self.assertEqual(self.library.list_metadata(), [])
+        self.assertFalse(self.library.pdf_path(self.paper).exists())
+        self.assertIsNone(self.window.paper)
         self.assertFalse(self.errors)
 
     def test_note_preview_reads_latest_text_each_time_it_is_opened(self):
@@ -463,8 +804,10 @@ class StreamingUITests(unittest.TestCase):
         handle = splitter.handle(1)
         QTest.mouseClick(handle, Qt.MouseButton.LeftButton)
         self.assertEqual(splitter.sizes()[0], 0)
+        self.assertFalse(self.window.library_rail_button.property('active'))
         QTest.mouseClick(handle, Qt.MouseButton.LeftButton)
         self.assertGreater(splitter.sizes()[0], 0)
+        self.assertTrue(self.window.library_rail_button.property('active'))
         before = splitter.sizes()[0]
         QTest.mousePress(handle, Qt.MouseButton.LeftButton)
         QTest.qWait(handle.HOLD_MS + 150)
@@ -765,7 +1108,7 @@ class StreamingUITests(unittest.TestCase):
         self.assertIs(self.window.model_selector.parent(), self.window.question.footer)
         self.assertGreaterEqual(self.window.question.footer.y(), 0)
 
-    def test_brand_settings_and_paper_context_export(self):
+    def test_rail_settings_and_paper_context_export(self):
         from pathlib import Path
         from PySide6.QtCore import Qt, QTimer
         from PySide6.QtTest import QTest
@@ -797,9 +1140,9 @@ class StreamingUITests(unittest.TestCase):
             finally:
                 dialog.reject()
 
-        self.assertEqual([b.text() for b in self.window.top_bar.findChildren(QPushButton)], ["PaperReader"])
+        self.assertEqual(self.window.top_bar.findChildren(QPushButton), [])
         QTimer.singleShot(0, check_settings)
-        QTest.mouseClick(self.window.brand_button, Qt.MouseButton.LeftButton)
+        QTest.mouseClick(self.window.settings_rail_button, Qt.MouseButton.LeftButton)
         self.assertFalse(errors, str(errors))
         menu = MagicMock()
         actions = {}

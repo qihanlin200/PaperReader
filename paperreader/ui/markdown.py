@@ -39,6 +39,7 @@ class MathResult(QObject):
 class MarkdownBrowser(QTextBrowser):
     followUpRequested = Signal(str)
     mathUpdated = Signal()
+    headingsChanged = Signal()
 
     def __init__(self, parent=None, reading_style=False, allow_followup=False):
         super().__init__(parent)
@@ -135,6 +136,20 @@ class MarkdownBrowser(QTextBrowser):
             output.append(text)
         return "".join(output)
 
+    def headings(self):
+        """Return currently rendered headings, including partial streamed reports."""
+        result = []
+        block = self.document().begin()
+        while block.isValid():
+            level = block.blockFormat().headingLevel()
+            title = block.text().strip()
+            if not level and not block.textList() and title.rstrip("：:") in _ANALYSIS_SECTION_LABELS:
+                level = 3
+            if level and title:
+                result.append((level, title, block.position()))
+            block = block.next()
+        return result
+
     def contextMenuEvent(self, event):
         menu = self.createStandardContextMenu()
         if self.allow_followup:
@@ -161,6 +176,7 @@ class MarkdownBrowser(QTextBrowser):
         if self.reading_style:
             self.format_reading_text()
         scrollbar.setValue(scrollbar.maximum() if following else previous)
+        self.headingsChanged.emit()
 
     def html_fragment(self, text):
         pending = set()

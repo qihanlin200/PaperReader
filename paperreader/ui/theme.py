@@ -210,16 +210,19 @@ QWidget { color: #e4ebf5; font-size: 13px; }
 QMainWindow, QDialog, QMessageBox { background: #0b1019; }
 QWidget#AppRoot, QWidget#ReaderPanel { background: #0b1019; }
 QWidget#TopBar { background: #111a28; border-bottom: 1px solid #263345; }
-QPushButton#Brand { background: transparent; border: 1px solid transparent; color: #eaf4ff; padding: 0 3px; font-size: 18px; font-weight: 600; }
-QPushButton#Brand:hover { color: #66ddda; }
-QPushButton#Brand:focus { border-color: #66ddda; }
-QLabel#CurrentPaper, QLabel#Muted { color: #93a4ba; }
-QLabel#SectionLabel { color: #8298b2; font-size: 11px; letter-spacing: 1px; }
+QLabel#BrandLabel { color: #eaf4ff; font-size: 18px; font-weight: 600; }
+QLabel#ReaderTitleDivider { color: #567089; font-size: 15px; }
+QLabel#ReaderPaperTitle { color: #a6b8ce; font-size: 12px; font-weight: 500; }
+QLabel#Muted { color: #93a4ba; }
+QWidget#WorkRail { background: #0c1420; border-right: 1px solid #263345; }
+QToolButton#WorkRailButton { background: transparent; border: 1px solid transparent; border-radius: 10px; padding: 0; }
+QToolButton#WorkRailButton:hover { background: #1b3040; border-color: #355665; }
+QToolButton#WorkRailButton[active="true"] { background: #17313c; border-color: #3c7180; }
+QToolButton#WorkRailButton:focus { border-color: #66ddda; }
 QWidget#LibraryPanel { background: #0e1520; }
 QWidget#PanelHeader { background: #101824; border-bottom: 1px solid #263345; }
 QLabel#PanelTitle { color: #e0eaf6; font-weight: 600; }
 QLabel#AccentLabel { color: #66ddda; font-size: 11px; }
-QLabel#LocalBadge { background: #142b2d; color: #9ed6c7; padding: 5px 9px; border-radius: 5px; font-size: 11px; }
 QPushButton { background: #162130; border: 1px solid #2c3d50; border-radius: 6px; padding: 7px 12px; min-height: 19px; }
 QPushButton:hover { background: #223146; border-color: #456079; }
 QPushButton:pressed { background: #294154; }
@@ -229,16 +232,19 @@ QPushButton#Primary:hover { background: #8ce9e6; }
 QPushButton#Primary:disabled { background: #294d53; color: #7ea6ac; border-color: #294d53; }
 QPushButton#Quiet { background: transparent; border-color: transparent; color: #a6b8ce; }
 QPushButton#Quiet:hover { background: #1c2c3d; color: #e4ebf5; }
+QFrame#AnalysisOutline { background: #101824; border: 1px solid #34475b; border-radius: 8px; }
+QListWidget#AnalysisOutlineList::item { padding: 7px 8px; margin: 1px 0; }
 QPushButton#QuestionMarker { background: transparent; color: #66ddda; border: none; padding: 0; min-height: 0; font-size: 18px; }
 QPushButton#QuestionMarker:hover { background: #294251; }
 QPushButton#NavButton { padding: 3px 8px; min-height: 18px; }
+QPushButton#AddPaperGroup { padding: 0; min-height: 36px; max-height: 36px; font-size: 20px; font-weight: 500; }
 QPushButton#Danger { color: #efb0b3; }
 QPushButton:focus, QLineEdit:focus, QTextEdit:focus { border-color: #66ddda; }
 QListWidget { background: transparent; border: none; outline: none; padding: 4px; }
 QListWidget::item { padding: 12px 9px; margin: 3px 0; border-radius: 6px; border: 1px solid transparent; }
 QListWidget::item:hover { background: #142130; }
 QListWidget::item:selected { background: #172c38; color: #e0f4f2; border-color: #355665; }
-QListWidget#PaperList::item { min-height: 26px; padding: 7px 9px; }
+QListWidget#PaperList::item { min-height: 26px; padding: 5px 9px; margin: 2px 0; }
 QToolButton#PaperFavoriteButton { background: transparent; border: 1px solid transparent; border-radius: 5px; padding: 0; }
 QToolButton#PaperFavoriteButton:hover { background: #294251; }
 QToolButton#PaperFavoriteButton:focus { border-color: #66ddda; }
@@ -257,6 +263,7 @@ QComboBox::drop-down:hover { background: #305465; }
 QComboBox::down-arrow { image: url("__DROPDOWN_ARROW__"); width: 14px; height: 14px; }
 QComboBox:disabled { color: #7b8d9d; border-color: #2a3949; }
 QComboBox QAbstractItemView { background: #162231; color: #e4ebf5; selection-background-color: #294251; }
+QLineEdit#PaperSearch { background: #121d2a; padding: 0 10px; min-height: 36px; max-height: 36px; }
 QComboBox#AnalysisMode { combobox-popup: 0; background: #121d2a; color: #a3bacd; border-color: #2b4053; padding: 4px 24px 4px 8px; min-height: 18px; }
 QComboBox#AnalysisMode:hover, QComboBox#AnalysisMode:focus { background: #172433; border-color: #4a6379; }
 QComboBox#AnalysisMode::drop-down { background: transparent; border: none; width: 23px; }
@@ -335,6 +342,7 @@ def apply_theme(theme=DEFAULT_THEME_ID):
     if pack.arrow:
         arrow = analysis_arrow = pack.arrow.as_posix()
     stylesheet = theme_css(STYLESHEET, theme) + '\n' + pack.stylesheet
-    app.setStyleSheet(stylesheet.replace("__DROPDOWN_ARROW__", arrow).replace("__ANALYSIS_ARROW__", analysis_arrow))
+    app.setStyleSheet(stylesheet.replace("__DROPDOWN_ARROW__", arrow)
+                      .replace("__ANALYSIS_ARROW__", analysis_arrow))
     from paperreader.ui.scrollbars import install_hover_scrollbars
     install_hover_scrollbars(app)

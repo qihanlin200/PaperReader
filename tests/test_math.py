@@ -33,6 +33,12 @@ class MathTests(unittest.TestCase):
         key = next(iter(view.math_resources))
         self.assertIsNotNone(view.loadResource(2, QUrl(key)))
 
+    def test_bold_cjk_evidence_label_next_to_text(self):
+        rendered = markdown_html('**【推断】**实验说明。\n\n`**【事实】**原样`', {}, {})
+        self.assertIn('font-weight:700;">【推断】</span>实验说明', rendered)
+        self.assertNotIn('**【推断】**实验说明', rendered)
+        self.assertIn('**【事实】**原样', rendered)
+
 
     def test_formula_transparent_background_and_table_alignment(self):
         from paperreader.ui.math_render import render_formula

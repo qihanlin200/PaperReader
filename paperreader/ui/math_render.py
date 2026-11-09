@@ -12,6 +12,7 @@ from PySide6.QtGui import QImage, QTextDocument
 
 # Skip fenced and inline code. Currency requires paired, whitespace-free delimiters.
 TOKENS = re.compile(r'(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`)|\\\[([\s\S]*?)\\\]|\\\(([\s\S]*?)\\\)|\$\$([\s\S]*?)\$\$|(?<![\\\w])\$(?!\s)([^$\n]+?)(?<!\s)\$(?!\d)')
+STRONG_LABEL = re.compile(r'(?<!\\)\*\*(【[^】\n]{1,40}】)\*\*(?=\S)')
 
 
 @lru_cache(maxsize=256)
@@ -63,8 +64,26 @@ def markdown_html(text, resources, sources, width=600, renderer=render_formula):
                                f'height="{natural_h*ratio:.0f}" alt="{html.escape(source, quote=True)}" />')
         return ('\n\n'+token+'\n\n') if match.group(2) is not None or match.group(4) is not None else token
     protected = TOKENS.sub(convert, text)
+    # Qt's Markdown parser leaves **【label】** as literal text when CJK text
+    # immediately follows it. Substitute only outside code and math spans.
+    labels = {}
+    def protect_labels(segment):
+        def replace(match):
+            token = 'PRLABEL' + str(len(labels)) + 'END'
+            labels[token] = html.escape(match.group(1))
+            return '**' + token + '**'
+        return STRONG_LABEL.sub(replace, segment)
+    parts = []
+    offset = 0
+    for token in TOKENS.finditer(protected):
+        parts.append(protect_labels(protected[offset:token.start()]))
+        parts.append(token.group())
+        offset = token.end()
+    parts.append(protect_labels(protected[offset:]))
+    protected = ''.join(parts)
     doc = QTextDocument()
     doc.setMarkdown(protected, QTextDocument.MarkdownFeature.MarkdownDialectGitHub | QTextDocument.MarkdownFeature.MarkdownNoHTML)
     result = re.search(r'<body[^>]*>(.*)</body>', doc.toHtml(), re.S).group(1)
     for token, markup in replacements.items(): result = result.replace(token, markup)
+    for token, label in labels.items(): result = result.replace(token, label)
     return result

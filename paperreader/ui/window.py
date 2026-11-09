@@ -14,8 +14,10 @@ from paperreader.services.library import Library
 from paperreader.services.network import complete, download
 from paperreader.ui.pdf import ContinuousPDF
 from paperreader.ui.markdown import MarkdownBrowser, MarkdownEditor, replace_citations
-from paperreader.ui.paper_list import PaperList
+from paperreader.ui.outline import AnalysisOutline
+from paperreader.ui.paper_list import PaperList, PAPER_ID_ROLE, GROUP_ID_ROLE, MACOS
 from paperreader.ui.splitter import PaneSplitter
+from paperreader.ui.work_rail import WorkRailButton
 from paperreader.services.themes import THEMES, get_theme
 from paperreader.ui.theme import ThemeHeader, ThemeSwitch, apply_theme
 from paperreader.ui.composer import QuestionEdit
@@ -61,6 +63,29 @@ class SettingsDialog(QDialog):
             super().closeEvent(event)
 
 
+class ElidedLabel(QLabel):
+    """Keep the full paper title available while fitting the reader header."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.full_text = ""
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
+    def set_full_text(self, text):
+        self.full_text = text
+        self.setToolTip(text)
+        self.update_elision()
+
+    def update_elision(self):
+        self.setText(self.fontMetrics().elidedText(self.full_text, Qt.TextElideMode.ElideRight,
+                                                   max(0, self.contentsRect().width())))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.update_elision()
+
+
 class Window(QMainWindow):
     def __init__(self, library=None):
         super().__init__()
@@ -79,7 +104,9 @@ class Window(QMainWindow):
         self.pool = QThreadPool.globalInstance()
         self.summary_drafts = {}
         self.chat_drafts = {}
-        self.setWindowTitle("PaperReader · 个人论文阅读器"); self.resize(1500, 920)
+        self.collapsed_groups = set()
+        self.search_collapsed_groups = set()
+        self.setWindowTitle("PaperReader · 读起来不烧心"); self.resize(1500, 920)
         root = QWidget(); root.setObjectName("AppRoot"); self.setCentralWidget(root)
         layout = QVBoxLayout(root); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(0)
 
@@ -98,36 +125,79 @@ class Window(QMainWindow):
 
         top = ThemeHeader(); self.top_bar = top
         bar = QHBoxLayout(top); bar.setContentsMargins(18, 8, 16, 8); bar.setSpacing(12)
-        self.brand_button = button("PaperReader", self.settings, "Brand")
-        self.brand_button.setIconSize(QSize(24, 24))
-        self.brand_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.brand_button.setToolTip("打开系统设置")
-        self.brand_button.setAccessibleName("PaperReader · 系统设置")
-        bar.addWidget(self.brand_button)
-        self.current_title = QLabel("论文精读工作台"); self.current_title.setObjectName("CurrentPaper")
-        self.current_title.setMaximumWidth(420); bar.addWidget(self.current_title, 1)
+        brand = QWidget(); brand.setObjectName("BrandMark")
+        brand_row = QHBoxLayout(brand); brand_row.setContentsMargins(0, 0, 0, 0); brand_row.setSpacing(7)
+        self.brand_icon = QLabel(); self.brand_icon.setFixedSize(24, 24)
+        brand_row.addWidget(self.brand_icon)
+        brand_label = QLabel("PaperReader"); brand_label.setObjectName("BrandLabel")
+        brand_row.addWidget(brand_label)
+        bar.addWidget(brand)
         bar.addStretch()
         layout.addWidget(top)
-        split = PaneSplitter(); self.splitter = split; layout.addWidget(split, 1)
+        body = QWidget(); body.setObjectName("MainBody")
+        body_row = QHBoxLayout(body); body_row.setContentsMargins(0, 0, 0, 0); body_row.setSpacing(0)
+        rail = QWidget(); rail.setObjectName("WorkRail"); rail.setFixedWidth(48)
+        rail_layout = QVBoxLayout(rail); rail_layout.setContentsMargins(5, 16, 5, 12); rail_layout.setSpacing(10)
+        self.library_rail_button = WorkRailButton("library", "收起论文列表；再次点击展开")
+        self.library_rail_button.clicked.connect(self.toggle_library)
+        self.library_rail_button.set_active(True)
+        rail_layout.addWidget(self.library_rail_button)
+        self.import_pdf_button = WorkRailButton("pdf", "本地导入 PDF")
+        self.import_pdf_button.clicked.connect(self.import_file)
+        rail_layout.addWidget(self.import_pdf_button)
+        self.import_link_button = WorkRailButton("link", "链接导入论文")
+        self.import_link_button.clicked.connect(self.import_link)
+        rail_layout.addWidget(self.import_link_button)
+        rail_layout.addStretch()
+        self.settings_rail_button = WorkRailButton("settings", "系统设置")
+        self.settings_rail_button.clicked.connect(self.settings)
+        rail_layout.addWidget(self.settings_rail_button)
+        self.work_rail = rail
+        body_row.addWidget(rail)
+        split = PaneSplitter(); self.splitter = split; body_row.addWidget(split, 1)
+        layout.addWidget(body, 1)
+        split.splitterMoved.connect(self.sync_library_rail)
+        split.paneToggled.connect(self.sync_library_rail)
 
-        library = QWidget(); library.setObjectName("LibraryPanel"); library.setMaximumWidth(280)
+        library = QWidget(); library.setObjectName("LibraryPanel")
+        library.setMinimumWidth(220); library.setMaximumWidth(280)
+        self.library_panel = library
         ll = QVBoxLayout(library); ll.setContentsMargins(12, 18, 12, 12); ll.setSpacing(10)
-        ll.addWidget(button("＋  导入 PDF", self.import_file, "Primary"))
-        ll.addWidget(button("链接导入", self.import_link))
-        section = QLabel("我的论文  /  LIBRARY"); section.setObjectName("SectionLabel"); ll.addWidget(section)
+        search_row = QHBoxLayout(); search_row.setContentsMargins(0, 0, 0, 0); search_row.setSpacing(6)
+        self.paper_search = QLineEdit(); self.paper_search.setObjectName("PaperSearch")
+        self.paper_search.setPlaceholderText("搜索我的论文…")
+        self.paper_search.setClearButtonEnabled(True)
+        self.paper_search.setFixedHeight(38)
+        self.paper_search.setToolTip("输入标题或来源关键词，按回车搜索")
+        self.paper_search.returnPressed.connect(self.search_papers)
+        self.paper_search.textChanged.connect(lambda value: self.search_papers() if not value else None)
+        search_row.addWidget(self.paper_search, 1, Qt.AlignmentFlag.AlignVCenter)
+        add_group = button("＋", self.create_paper_group, "AddPaperGroup")
+        add_group.setToolTip("新建论文分组")
+        add_group.setAccessibleName("新建论文分组")
+        add_group.setFixedSize(38, 38)
+        search_row.addWidget(add_group, 0, Qt.AlignmentFlag.AlignVCenter)
+        ll.addLayout(search_row)
         self.list = PaperList()
-        self.list.favoriteRequested.connect(lambda row: self.toggle_favorite(self.papers[row]))
+        self.list.favoriteRequested.connect(self.favorite_paper_at_row)
+        self.list.paperDropped.connect(self.drop_papers_into_group)
+        self.list.groupDropped.connect(self.reorder_paper_group)
         self.list.setWordWrap(False); self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.list.setTextElideMode(Qt.TextElideMode.ElideRight); self.list.currentRowChanged.connect(self.open_paper);
+        self.list.itemClicked.connect(self.toggle_group_item)
         self.list.itemDoubleClicked.connect(lambda item: self.open_paper(self.list.row(item)))
         self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self.paper_context_menu); ll.addWidget(self.list, 1)
-        badge = QLabel("●  学习记录保存在本机"); badge.setObjectName("LocalBadge"); ll.addWidget(badge)
         split.addWidget(library)
 
         reader = QWidget(); reader.setObjectName("ReaderPanel")
         rl = QVBoxLayout(reader); rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(0)
-        head, _ = header("原文预览", "PDF"); rl.addWidget(head)
+        head, reader_head = header("原文预览", "PDF")
+        self.reader_title_divider = QLabel("·"); self.reader_title_divider.setObjectName("ReaderTitleDivider")
+        self.reader_title_divider.hide(); reader_head.insertWidget(1, self.reader_title_divider)
+        self.reader_paper_title = ElidedLabel(); self.reader_paper_title.setObjectName("ReaderPaperTitle")
+        reader_head.insertWidget(2, self.reader_paper_title, 1)
+        rl.addWidget(head)
         nav_widget = QWidget(); nav = QHBoxLayout(nav_widget); nav.setContentsMargins(10, 6, 10, 6); nav.setSpacing(5)
         nav.addWidget(button("‹", lambda: self.turn(-1), "NavButton"))
         self.page_label = QLabel("— / —"); self.page_label.setObjectName("Muted"); nav.addWidget(self.page_label)
@@ -166,6 +236,12 @@ class Window(QMainWindow):
         self.summary.anchorClicked.connect(self.continue_reading)
         self.analysis_status = RequestStatus(); self.analysis_status.attach(self.summary)
         tabs.addTab(self.summary, "AI 分析")
+        self.outline_button = button("目录 ▾", self.show_analysis_outline, "Quiet")
+        self.outline_button.setToolTip("查看当前 AI 分析的章节")
+        tabs.setCornerWidget(self.outline_button, Qt.Corner.TopRightCorner)
+        self.analysis_outline = AnalysisOutline(self)
+        tabs.currentChanged.connect(lambda index: self.outline_button.setVisible(index == 0))
+        tabs.currentChanged.connect(lambda _: self.analysis_outline.hide())
         self.notes = MarkdownEditor("记录你的理解与思考，支持 Markdown…"); tabs.addTab(self.notes, "笔记")
         marks_widget = QWidget(); ml = QVBoxLayout(marks_widget); ml.setContentsMargins(10, 10, 10, 10)
         self.marks = QListWidget(); ml.addWidget(self.marks)
@@ -245,7 +321,8 @@ class Window(QMainWindow):
         self.question.footer_layout.addWidget(self.send_button)
         cl.addWidget(composer); split.addWidget(chat)
         self.update_theme_art()
-        split.setSizes([200, 560, 365, 375])
+        split.setSizes([220, 500, 335, 335])
+        self.sync_library_rail()
         status_label = QLabel("云端模型 API · 本地资料库"); status_label.setObjectName("Muted")
         self.statusBar().addPermanentWidget(status_label)
         self.timer = QTimer(self); self.timer.setSingleShot(True); self.timer.setInterval(500); self.timer.timeout.connect(self.save_notes)
@@ -286,21 +363,249 @@ class Window(QMainWindow):
 
     def reload(self, identifier=None, *, reopen=True):
         if hasattr(self, "timer"): self.save_notes()
-        self.papers = self.library.list_metadata()
-        row = next((i for i, paper in enumerate(self.papers) if paper["id"] == identifier), -1)
+        self.all_papers = self.library.list_metadata()
+        groups = self.library.list_groups()
+        selected = next((p for p in self.all_papers if p["id"] == identifier), None)
+        if reopen and selected:
+            query = self.paper_search.text().strip().casefold().split()
+            if any(word not in (selected["title"] + " " + selected["source"]).casefold() for word in query):
+                with QSignalBlocker(self.paper_search): self.paper_search.clear()
+        query = self.paper_search.text().strip().casefold().split()
+        collapsed = self.search_collapsed_groups if query else self.collapsed_groups
+        if reopen and selected:
+            collapsed.discard(selected["group_id"] if selected["group_id"] is not None else -1)
+        self.papers = [paper for paper in self.all_papers
+                       if all(word in (paper["title"] + " " + paper["source"]).casefold() for word in query)]
+        by_group = {group["id"]: [] for group in groups}
+        ungrouped = []
+        for paper in self.papers:
+            by_group.get(paper["group_id"], ungrouped).append(paper)
         with QSignalBlocker(self.list):
             self.list.clear()
-            for paper in self.papers:
-                self.list.add_paper(paper["title"], paper["favorite"])
+            for group in groups:
+                papers = by_group[group["id"]]
+                if papers or not query:
+                    is_collapsed = group["id"] in collapsed
+                    self.list.add_group(group["name"], group["id"], len(papers), group["pinned"], is_collapsed)
+                    if not is_collapsed:
+                        for paper in papers:
+                            self.list.add_paper(paper["title"], paper["favorite"], paper["id"])
+            if ungrouped or (groups and not query):
+                if groups:
+                    self.list.add_group("未分组", -1, len(ungrouped), collapsed=-1 in collapsed)
+                if not groups or -1 not in collapsed:
+                    for paper in ungrouped:
+                        self.list.add_paper(paper["title"], paper["favorite"], paper["id"])
+            row = self.row_for_paper(identifier)
             if not reopen and row >= 0:
                 self.list.setCurrentRow(row)
         if reopen and row >= 0:
             self.list.setCurrentRow(row)
 
+    def paper_at_row(self, row):
+        item = self.list.item(row)
+        identifier = item.data(PAPER_ID_ROLE) if item else None
+        return next((paper for paper in self.all_papers if paper["id"] == identifier), None)
+
+    def row_for_paper(self, identifier):
+        if not identifier: return -1
+        return next((row for row in range(self.list.count())
+                     if self.list.item(row).data(PAPER_ID_ROLE) == identifier), -1)
+
+    def favorite_paper_at_row(self, row):
+        paper = self.paper_at_row(row)
+        if paper: self.toggle_favorite(paper)
+
+    def toggle_group_item(self, item):
+        group_id = item.data(GROUP_ID_ROLE)
+        if group_id is None: return
+        collapsed = self.search_collapsed_groups if self.paper_search.text().strip() else self.collapsed_groups
+        if group_id in collapsed:
+            collapsed.remove(group_id)
+        else:
+            collapsed.add(group_id)
+        scroll = self.list.verticalScrollBar().value()
+        self.reload(self.paper["id"] if self.paper else None, reopen=False)
+        self.list.verticalScrollBar().setValue(scroll)
+
+    def search_papers(self):
+        self.search_collapsed_groups.clear()
+        current = self.paper["id"] if self.paper else None
+        self.reload(current, reopen=False)
+
+    def toggle_library(self):
+        if self.splitter.sizes()[0] == 0:
+            self.splitter.previous_widths.setdefault(0, 220)
+        self.splitter.toggle(0)
+        self.sync_library_rail()
+
+    def sync_library_rail(self, *_):
+        expanded = self.splitter.sizes()[0] > 0
+        self.library_rail_button.set_active(expanded)
+        self.library_rail_button.setToolTip("收起论文列表" if expanded else "展开论文列表")
+
+    def set_reader_title(self, title):
+        self.reader_paper_title.set_full_text(title)
+        self.reader_title_divider.setVisible(bool(title))
+
+    def create_paper_group(self):
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle("新建论文分组")
+        dialog.setLabelText("分组名称：")
+        dialog.setOkButtonText("创建"); dialog.setCancelButtonText("取消")
+        dialog.setMinimumWidth(620); dialog.resize(680, 180)
+        if not dialog.exec(): return
+        try:
+            self.library.create_group(dialog.textValue())
+        except Exception as exc:
+            self.error("创建分组失败：" + str(exc)); return
+        current = self.paper["id"] if self.paper else None
+        self.reload(current, reopen=False)
+        self.statusBar().showMessage("已创建论文分组。")
+
+    def move_paper_to_group(self, paper, group_id):
+        try:
+            self.library.set_group(paper["id"], group_id)
+        except Exception as exc:
+            self.error("移动论文失败：" + str(exc)); return
+        current = self.paper["id"] if self.paper else None
+        self.reload(current, reopen=False)
+
+    def drop_papers_into_group(self, identifiers, group_id):
+        visible = {paper["id"]: paper for paper in self.all_papers}
+        to_move = [identifier for identifier in identifiers
+                   if identifier in visible and visible[identifier]["group_id"] != group_id]
+        if not to_move:
+            return
+        try:
+            self.library.set_groups(to_move, group_id)
+        except Exception as exc:
+            self.error("移动论文失败：" + str(exc))
+            return
+        target = -1 if group_id is None else group_id
+        self.collapsed_groups.discard(target)
+        self.search_collapsed_groups.discard(target)
+        current = self.paper["id"] if self.paper else None
+        self.reload(current, reopen=False)
+        row = self.row_for_paper(to_move[0])
+        if row >= 0:
+            self.list.scrollToItem(self.list.item(row), QListWidget.ScrollHint.PositionAtCenter)
+        self.statusBar().showMessage(f"已将 {len(to_move)} 篇论文移入" + ("未分组。" if group_id is None else "分组。"))
+
+    def reorder_paper_group(self, group_id, target_id, after):
+        try:
+            self.library.reorder_group(group_id, target_id, after)
+        except Exception as exc:
+            self.error("调整分组顺序失败：" + str(exc))
+            return
+        self.reload(self.paper["id"] if self.paper else None, reopen=False)
+        row = next((index for index in range(self.list.count())
+                    if self.list.item(index).data(GROUP_ID_ROLE) == group_id), -1)
+        if row >= 0:
+            self.list.scrollToItem(self.list.item(row), QListWidget.ScrollHint.PositionAtCenter)
+        self.statusBar().showMessage("分组顺序已保存。")
+
+    def group_context_menu(self, group_id, position):
+        group = next((entry for entry in self.library.list_groups() if entry["id"] == group_id), None)
+        if group is None: return
+        menu = QMenu(self)
+        rename = menu.addAction("修改分组名")
+        rename.triggered.connect(lambda: self.rename_paper_group(group))
+        pin = menu.addAction("取消置顶" if group["pinned"] else "置顶分组")
+        pin.triggered.connect(lambda: self.pin_paper_group(group))
+        menu.addSeparator()
+        delete = menu.addAction("删除分组")
+        delete.triggered.connect(lambda: self.delete_paper_group(group))
+        menu.exec(self.list.viewport().mapToGlobal(position))
+
+    def rename_paper_group(self, group):
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle("修改分组名")
+        dialog.setLabelText("分组名称：")
+        dialog.setTextValue(group["name"])
+        dialog.setOkButtonText("保存"); dialog.setCancelButtonText("取消")
+        dialog.setMinimumWidth(620); dialog.resize(680, 180)
+        if not dialog.exec(): return
+        try:
+            self.library.rename_group(group["id"], dialog.textValue())
+        except Exception as exc:
+            self.error("修改分组失败：" + str(exc)); return
+        self.reload(self.paper["id"] if self.paper else None, reopen=False)
+
+    def pin_paper_group(self, group):
+        try:
+            self.library.set_group_pinned(group["id"], not group["pinned"])
+        except Exception as exc:
+            self.error("更新分组置顶失败：" + str(exc)); return
+        self.reload(self.paper["id"] if self.paper else None, reopen=False)
+
+    def delete_paper_group(self, group):
+        if self.busy:
+            self.error("请等待后台任务完成后删除分组。")
+            return
+        identifiers = self.library.paper_ids_in_group(group["id"])
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("删除论文分组")
+        dialog.setIcon(QMessageBox.Icon.Warning)
+        dialog.setTextFormat(Qt.TextFormat.RichText)
+        dialog.setText(f"<b>确定删除分组“{escape(group['name'])}”？</b>")
+        dialog.setInformativeText(
+            f"<p>该分组关联 {len(identifiers)} 篇论文（包括已从列表移除的论文）。</p>"
+            "<p><b>仅删除分组</b>：论文移到“未分组”，原文和全部学习内容保留。</p>"
+            "<p><b>删除分组及全部论文（不可恢复）</b>：彻底删除组内论文的应用内 PDF 副本、"
+            "AI 分析、笔记、追问、标注和阅读进度。</p>"
+            "<p>不会删除原始导入文件、手动导出的文件或备份。</p>")
+        dialog.setMinimumWidth(740)
+        grid = dialog.layout()
+        grid.addItem(QSpacerItem(680, 0, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum),
+                     grid.rowCount(), 0, 1, grid.columnCount())
+        cancel = dialog.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        keep = dialog.addButton("仅删除分组", QMessageBox.ButtonRole.ActionRole)
+        purge = dialog.addButton("删除分组及全部论文", QMessageBox.ButtonRole.DestructiveRole)
+        keep.setStyleSheet("font-weight: 700;")
+        purge.setObjectName("Danger"); purge.setStyleSheet("font-weight: 700;")
+        button_box = dialog.findChild(QDialogButtonBox)
+        if button_box:
+            row = button_box.layout()
+            while row.count(): row.takeAt(0)
+            row.addStretch(1)
+            for action_button in (cancel, keep, purge): row.addWidget(action_button)
+        dialog.setDefaultButton(cancel); dialog.setEscapeButton(cancel)
+        dialog.exec()
+        if dialog.clickedButton() not in (keep, purge): return
+        permanent = dialog.clickedButton() is purge
+        if permanent and self.paper and self.paper["id"] in identifiers:
+            self.close_current_paper()
+        try:
+            self.library.delete_group(group["id"], permanent=permanent)
+        except Exception as exc:
+            self.reload(self.paper["id"] if self.paper else None, reopen=False)
+            self.error("删除分组失败：" + str(exc)); return
+        if permanent:
+            for identifier in identifiers:
+                self.discard_paper_drafts(identifier)
+                self.analysis_status.discard_paper(identifier)
+                self.chat_status.discard_paper(identifier)
+            self.clear_permanent_paper_caches()
+        self.collapsed_groups.discard(group["id"])
+        self.search_collapsed_groups.discard(group["id"])
+        self.reload(self.paper["id"] if self.paper else None, reopen=False)
+        if self.paper is None:
+            row = self.first_paper_row()
+            if row >= 0: self.list.setCurrentRow(row)
+        self.statusBar().showMessage("分组及组内论文已彻底删除。" if permanent else "分组已删除，论文已移到未分组。")
+
     def paper_context_menu(self, position):
+        if MACOS and QApplication.keyboardModifiers() & Qt.KeyboardModifier.MetaModifier:
+            return
         item = self.list.itemAt(position)
         if item is None: return
-        paper = self.papers[self.list.row(item)]
+        group_id = item.data(GROUP_ID_ROLE)
+        if group_id is not None:
+            if group_id != -1: self.group_context_menu(group_id, position)
+            return
+        paper = self.paper_at_row(self.list.row(item))
+        if paper is None: return
         menu = QMenu(self)
         assets = Path(__file__).resolve().parent.parent / "assets"
         star = self.list.favorite_icon if paper["favorite"] else self.list.outline_icon
@@ -308,6 +613,12 @@ class Window(QMainWindow):
         favorite.triggered.connect(lambda: self.toggle_favorite(paper))
         rename = menu.addAction(QIcon(str(assets / "paper-edit.svg")), "修改论文标题")
         rename.triggered.connect(lambda: self.rename_paper(item))
+        group_menu = menu.addMenu("移动到分组")
+        for group_id, name in [(None, "未分组")] + [(g["id"], g["name"]) for g in self.library.list_groups()]:
+            group_action = group_menu.addAction(name)
+            group_action.setCheckable(True)
+            group_action.setChecked(paper["group_id"] == group_id)
+            group_action.triggered.connect(lambda _checked=False, target=group_id: self.move_paper_to_group(paper, target))
         export = menu.addAction(QIcon(str(assets / "paper-export.svg")), "导出学习内容")
         export.triggered.connect(lambda: self.export(paper["id"]))
         menu.addSeparator()
@@ -381,6 +692,29 @@ class Window(QMainWindow):
                 self.summary_drafts.pop(draft)
         self.chat_drafts.pop(identifier, None)
 
+    def first_paper_row(self):
+        return next((row for row in range(self.list.count())
+                     if self.list.item(row).data(PAPER_ID_ROLE)), -1)
+
+    def close_current_paper(self):
+        self.save_notes(); self.timer.stop(); self.position_timer.stop(); self.persist()
+        self.view.clear_document()
+        if self.doc: self.doc.close()
+        self.doc = None; self.paper = None
+        self.passage_index = None
+        self.analysis_status.set_context(None); self.chat_status.set_context(None)
+        self.notes.blockSignals(True); self.notes.clear(); self.notes.blockSignals(False)
+        self.summary.set_markdown(""); self.chat.set_markdown("")
+        self.marks.clear(); self.mark_preview.set_markdown(""); self.question.clear(); self.clear_quote()
+        self.question_navigation.update_questions([])
+        self.set_reader_title(""); self.page_label.setText("— / —")
+
+    def clear_permanent_paper_caches(self):
+        from paperreader.ui.math_render import render_formula
+        render_formula.cache_clear()
+        for browser in (self.summary, self.chat, self.quote_label, self.mark_preview, self.notes.preview):
+            browser.math_resources.clear(); browser.math_sources.clear()
+
     def remove_paper(self, paper):
         if self.busy:
             self.error("请等待后台任务完成后移除论文。"); return
@@ -416,36 +750,26 @@ class Window(QMainWindow):
         permanent = clicked is purge
         identifier = paper['id']
         if self.paper and self.paper['id'] == identifier:
-            self.save_notes(); self.position_timer.stop(); self.persist()
-            self.view.clear_document()
-            if self.doc: self.doc.close()
-            self.doc = None; self.paper = None
-            self.passage_index = None
-            self.analysis_status.set_context(None); self.chat_status.set_context(None)
-            self.notes.blockSignals(True); self.notes.clear(); self.notes.blockSignals(False)
-            self.summary.set_markdown(""); self.chat.set_markdown("")
-            self.marks.clear(); self.mark_preview.set_markdown(""); self.question.clear(); self.clear_quote()
-            self.question_navigation.update_questions([])
-            self.current_title.setText("论文精读工作台"); self.page_label.setText("— / —")
+            self.close_current_paper()
         try: self.library.remove(paper, permanent)
         except Exception as exc:
             self.reload(identifier); self.error("移除失败：" + str(exc)); return
         self.discard_paper_drafts(identifier)
         if permanent:
             self.analysis_status.discard_paper(identifier); self.chat_status.discard_paper(identifier)
-            from paperreader.ui.math_render import render_formula
-            render_formula.cache_clear()
-            for browser in (self.summary, self.chat, self.quote_label, self.mark_preview, self.notes.preview):
-                browser.math_resources.clear(); browser.math_sources.clear()
+            self.clear_permanent_paper_caches()
         current = self.paper['id'] if self.paper else None
         self.reload(current)
-        if self.paper is None and self.papers: self.list.setCurrentRow(0)
+        if self.paper is None and self.papers:
+            row = self.first_paper_row()
+            if row >= 0: self.list.setCurrentRow(row)
         self.statusBar().showMessage("论文及其本地学习记录已彻底删除。" if permanent else "已从论文列表移除，重新导入相同 PDF 可恢复。")
 
     def rename_paper(self, item):
         row = self.list.row(item)
         if row < 0: return
-        metadata = self.papers[row]
+        metadata = self.paper_at_row(row)
+        if metadata is None: return
         paper = self.paper if self.paper and self.paper["id"] == metadata["id"] else self.library.get(metadata["id"])
         dialog = QInputDialog(self)
         dialog.setWindowTitle("修改论文标题")
@@ -460,21 +784,23 @@ class Window(QMainWindow):
             metadata["title"] = paper["title"]
             item.setText(paper["title"]); item.setToolTip(paper["title"])
             if self.paper is paper:
-                self.current_title.setText(paper["title"]); self.current_title.setToolTip(paper["title"])
+                self.set_reader_title(paper["title"])
 
     def open_paper(self, row):
         if row < 0: return
+        if self.list._modifying_selection: return
+        metadata = self.paper_at_row(row)
+        if metadata is None: return
         self.save_notes()
         self.position_timer.stop()
         if self.paper: self.persist()
         if self.doc: self.doc.close()
-        metadata = self.papers[row]
         pending = getattr(self, 'inflight_paper', None)
         self.paper = pending if self.busy and pending and pending['id'] == metadata['id'] else self.library.get(metadata['id'])
         metadata['title'] = self.paper['title']
         self.list.item(row).setText(self.paper['title']); self.list.item(row).setToolTip(self.paper['title'])
         ensure_sessions(self.paper)
-        self.current_title.setText(self.paper["title"]); self.current_title.setToolTip(self.paper["title"])
+        self.set_reader_title(self.paper["title"])
         self.doc = fitz.open(self.library.pdf_path(self.paper))
         self.passage_index = None
         self.page = min(self.paper.get("page", 0), len(self.doc)-1)
@@ -501,6 +827,10 @@ class Window(QMainWindow):
         self.summary.set_markdown(text, footer_html=footer)
         self.render_chat()
         self.marks.clear(); self.marks.addItems([f"P{m['page']+1} · {m['text'][:55]}\n{m['comment']}" for m in self.paper["marks"]])
+
+    def show_analysis_outline(self):
+        if self.paper:
+            self.analysis_outline.show_for(self.outline_button, self.summary)
 
     def reading_page_changed(self, page):
         if not self.paper: return
@@ -756,7 +1086,7 @@ class Window(QMainWindow):
         for index in range(1, self.splitter.count()):
             self.splitter.widget(index).layout().setContentsMargins(inset, inset, inset, inset)
         default_mark = Path(__file__).resolve().parent.parent / "assets" / "brand-diamond.svg"
-        self.brand_button.setIcon(QIcon(str(pack.brand_icon or default_mark)))
+        self.brand_icon.setPixmap(QIcon(str(pack.brand_icon or default_mark)).pixmap(QSize(24, 24)))
         self.question.setPlaceholderText(pack.question_placeholder)
 
     def build_model_settings(self, dialog, form):
