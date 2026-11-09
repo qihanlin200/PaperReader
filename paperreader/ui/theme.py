@@ -94,6 +94,28 @@ class ThemeSwitch(QCheckBox):
                          self.status_text())
 
 
+class WorkspaceBackground(QWidget):
+    """Scale one theme image across the full window behind the reading panes."""
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("AppRoot")
+        self._background_path = None
+        self._background = QPixmap()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        path = get_theme(current_theme()).workspace_background
+        if path != self._background_path:
+            self._background_path = path
+            self._background = QPixmap(str(path)) if path else QPixmap()
+        if self._background.isNull():
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        painter.drawPixmap(QRectF(self.rect()), self._background, QRectF(self._background.rect()))
+
+
 class ThemeHeader(QWidget):
     def __init__(self):
         super().__init__()
@@ -244,7 +266,8 @@ QListWidget { background: transparent; border: none; outline: none; padding: 4px
 QListWidget::item { padding: 12px 9px; margin: 3px 0; border-radius: 6px; border: 1px solid transparent; }
 QListWidget::item:hover { background: #142130; }
 QListWidget::item:selected { background: #172c38; color: #e0f4f2; border-color: #355665; }
-QListWidget#PaperList::item { min-height: 26px; padding: 5px 9px; margin: 2px 0; }
+QListWidget#PaperList { padding: 0; }
+QListWidget#PaperList::item { min-height: 26px; padding: 5px 4px; margin: 2px 0; }
 QToolButton#PaperFavoriteButton { background: transparent; border: 1px solid transparent; border-radius: 5px; padding: 0; }
 QToolButton#PaperFavoriteButton:hover { background: #294251; }
 QToolButton#PaperFavoriteButton:focus { border-color: #66ddda; }
@@ -300,6 +323,8 @@ QMenu { background: #162231; border: 1px solid #344b62; padding: 5px; }
 QMenu::item { padding: 8px 20px; border-radius: 4px; }
 QMenu::item:selected { background: #294251; color: #8ce9e6; }
 QMenu::item:disabled { color: #79899b; }
+QMenu#LibraryAddMenu { border-radius: 8px; }
+QMenu#LibraryAddMenu::item { padding: 9px 18px 9px 10px; }
 QMenu#PdfSelectionMenu { border-radius: 8px; }
 QMenu#PdfSelectionMenu::item { padding: 8px 24px 8px 14px; }
 QMenu#PdfSelectionMenu::separator { height: 1px; background: #344b62; margin: 4px 8px; }

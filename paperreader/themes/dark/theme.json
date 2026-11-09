@@ -1,5 +1,7 @@
 {
-  "name": "深色主题",
+  "name": "星空主题",
+  "workspace_background": "starfield.png",
+  "stylesheet": "style.qss",
   "pdf_paper": "#101824",
   "pdf_ink": "#e4ebf5",
   "assistant": {

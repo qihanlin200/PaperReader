@@ -1,11 +1,19 @@
 """Plain text composer with an inset footer, outside the text editing viewport."""
+import sys
+
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QTextEdit, QWidget, QHBoxLayout
+
+MACOS = sys.platform == 'darwin'
 
 
 class QuestionEdit(QTextEdit):
+    submitRequested = Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAcceptRichText(False)
+        self.setToolTip('回车发送；Option（⌥）+回车换行' if MACOS else '回车发送；Ctrl+回车换行')
         self.setViewportMargins(0, 0, 0, 48)
         self.footer = QWidget(self)
         self.footer.setObjectName('ComposerFooter')
@@ -18,3 +26,14 @@ class QuestionEdit(QTextEdit):
         super().resizeEvent(event)
         if hasattr(self, 'footer'):
             self.footer.setGeometry(8, self.height()-48, max(0, self.width()-16), 40)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            newline_modifier = Qt.KeyboardModifier.AltModifier if MACOS else Qt.KeyboardModifier.ControlModifier
+            if event.modifiers() == newline_modifier:
+                self.insertPlainText('\n')
+            elif not event.isAutoRepeat():
+                self.submitRequested.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)

@@ -1,10 +1,12 @@
 from html import escape
 from pathlib import Path
 from threading import Event
+import os
+import tempfile
 import uuid
 from paperreader.services.lazy import fitz
 from paperreader.services.lazy import keyring
-from PySide6.QtCore import QObject, QRunnable, QSize, QThreadPool, Signal, QSignalBlocker, QTimer, QUrl, QUrlQuery
+from PySide6.QtCore import QObject, QPoint, QRunnable, QSize, QThreadPool, Signal, QSignalBlocker, QTimer, QUrl, QUrlQuery
 from PySide6.QtGui import QIcon, QPixmap, QTextCursor
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QListView, QListWidget, QSplitter, QScrollArea, QStackedWidget, QTextBrowser, QTextEdit, QLineEdit, QLabel,
@@ -17,9 +19,9 @@ from paperreader.ui.markdown import MarkdownBrowser, MarkdownEditor, replace_cit
 from paperreader.ui.outline import AnalysisOutline
 from paperreader.ui.paper_list import PaperList, PAPER_ID_ROLE, GROUP_ID_ROLE, MACOS
 from paperreader.ui.splitter import PaneSplitter
-from paperreader.ui.work_rail import WorkRailButton
+from paperreader.ui.work_rail import WorkRailButton, menu_symbol_icon
 from paperreader.services.themes import THEMES, get_theme
-from paperreader.ui.theme import ThemeHeader, ThemeSwitch, apply_theme
+from paperreader.ui.theme import ThemeHeader, ThemeSwitch, WorkspaceBackground, apply_theme
 from paperreader.ui.composer import QuestionEdit
 from paperreader.ui.questions import QuestionNavigation
 from paperreader.ui.request_status import RequestStatus
@@ -29,7 +31,7 @@ from paperreader.services.retrieval import CITATION, Passage, PassageIndex, asks
 from paperreader.services.persona import assistant_name, with_persona
 from paperreader.services.analysis import run_analysis, input_limit, message_length
 import json
-from paperreader.services.profiles import normalize_profiles, active_profile, new_profile
+from paperreader.services.profiles import normalize_profiles, active_profile, new_profile, export_profiles, import_profiles
 
 
 class Signals(QObject):
@@ -107,7 +109,7 @@ class Window(QMainWindow):
         self.collapsed_groups = set()
         self.search_collapsed_groups = set()
         self.setWindowTitle("PaperReader · 读起来不烧心"); self.resize(1500, 920)
-        root = QWidget(); root.setObjectName("AppRoot"); self.setCentralWidget(root)
+        root = WorkspaceBackground(); self.setCentralWidget(root)
         layout = QVBoxLayout(root); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(0)
 
         def button(text, fn, style="Quiet"):
@@ -142,12 +144,6 @@ class Window(QMainWindow):
         self.library_rail_button.clicked.connect(self.toggle_library)
         self.library_rail_button.set_active(True)
         rail_layout.addWidget(self.library_rail_button)
-        self.import_pdf_button = WorkRailButton("pdf", "本地导入 PDF")
-        self.import_pdf_button.clicked.connect(self.import_file)
-        rail_layout.addWidget(self.import_pdf_button)
-        self.import_link_button = WorkRailButton("link", "链接导入论文")
-        self.import_link_button.clicked.connect(self.import_link)
-        rail_layout.addWidget(self.import_link_button)
         rail_layout.addStretch()
         self.settings_rail_button = WorkRailButton("settings", "系统设置")
         self.settings_rail_button.clicked.connect(self.settings)
@@ -168,15 +164,24 @@ class Window(QMainWindow):
         self.paper_search.setPlaceholderText("搜索我的论文…")
         self.paper_search.setClearButtonEnabled(True)
         self.paper_search.setFixedHeight(38)
-        self.paper_search.setToolTip("输入标题或来源关键词，按回车搜索")
-        self.paper_search.returnPressed.connect(self.search_papers)
-        self.paper_search.textChanged.connect(lambda value: self.search_papers() if not value else None)
+        self.paper_search.setToolTip("输入标题或来源关键词，实时筛选论文")
+        self.paper_search.textChanged.connect(self.search_papers)
         search_row.addWidget(self.paper_search, 1, Qt.AlignmentFlag.AlignVCenter)
-        add_group = button("＋", self.create_paper_group, "AddPaperGroup")
-        add_group.setToolTip("新建论文分组")
-        add_group.setAccessibleName("新建论文分组")
-        add_group.setFixedSize(38, 38)
-        search_row.addWidget(add_group, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.library_add_button = button("＋", self.show_library_add_menu, "AddPaperGroup")
+        self.library_add_button.setToolTip("导入论文或创建分组")
+        self.library_add_button.setAccessibleName("导入论文或创建分组")
+        self.library_add_button.setFixedSize(38, 38)
+        search_row.addWidget(self.library_add_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.library_add_menu = QMenu(self)
+        self.library_add_menu.setObjectName("LibraryAddMenu")
+        for label, symbol, handler in (
+            ("本地论文导入", "pdf", self.import_file),
+            ("网页链接导入", "link", self.import_link),
+            ("创建分组", "group", self.create_paper_group),
+        ):
+            action = self.library_add_menu.addAction(label)
+            action.setData(symbol)
+            action.triggered.connect(handler)
         ll.addLayout(search_row)
         self.list = PaperList()
         self.list.favoriteRequested.connect(self.favorite_paper_at_row)
@@ -202,7 +207,7 @@ class Window(QMainWindow):
         nav.addWidget(button("‹", lambda: self.turn(-1), "NavButton"))
         self.page_label = QLabel("— / —"); self.page_label.setObjectName("Muted"); nav.addWidget(self.page_label)
         nav.addWidget(button("›", lambda: self.turn(1), "NavButton")); nav.addStretch()
-        nav.addWidget(button("自适应", self.fit_width, "NavButton"))
+        nav.addWidget(button("校准", self.fit_width, "NavButton"))
         nav.addWidget(button("−", lambda: self.zoom(.85), "NavButton"))
         self.zoom_label = QLabel("130%"); self.zoom_label.setObjectName("Muted"); nav.addWidget(self.zoom_label)
         nav.addWidget(button("＋", lambda: self.zoom(1.18), "NavButton")); rl.addWidget(nav_widget)
@@ -308,6 +313,7 @@ class Window(QMainWindow):
         quote_box.hide()
         composer = QWidget(); form = QVBoxLayout(composer); form.setContentsMargins(0, 8, 0, 0); form.setSpacing(0)
         self.question = QuestionEdit()
+        self.question.submitRequested.connect(self.ask)
         self.question.setMaximumHeight(165); form.addWidget(self.question)
         self.model_selector = QComboBox(); self.model_selector.setMinimumWidth(0)
         self.model_selector.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
@@ -361,9 +367,10 @@ class Window(QMainWindow):
             self.statusBar().showMessage("已保存到本地")
         except Exception as exc: self.error("本地保存失败：" + str(exc))
 
-    def reload(self, identifier=None, *, reopen=True):
-        if hasattr(self, "timer"): self.save_notes()
-        self.all_papers = self.library.list_metadata()
+    def reload(self, identifier=None, *, reopen=True, refresh_metadata=True):
+        if refresh_metadata:
+            if hasattr(self, "timer"): self.save_notes()
+            self.all_papers = self.library.list_metadata()
         groups = self.library.list_groups()
         selected = next((p for p in self.all_papers if p["id"] == identifier), None)
         if reopen and selected:
@@ -428,10 +435,10 @@ class Window(QMainWindow):
         self.reload(self.paper["id"] if self.paper else None, reopen=False)
         self.list.verticalScrollBar().setValue(scroll)
 
-    def search_papers(self):
+    def search_papers(self, _text=None):
         self.search_collapsed_groups.clear()
         current = self.paper["id"] if self.paper else None
-        self.reload(current, reopen=False)
+        self.reload(current, reopen=False, refresh_metadata=False)
 
     def toggle_library(self):
         if self.splitter.sizes()[0] == 0:
@@ -447,6 +454,13 @@ class Window(QMainWindow):
     def set_reader_title(self, title):
         self.reader_paper_title.set_full_text(title)
         self.reader_title_divider.setVisible(bool(title))
+
+    def show_library_add_menu(self):
+        menu = self.library_add_menu
+        for action in menu.actions():
+            action.setIcon(menu_symbol_icon(action.data()))
+        button = self.library_add_button
+        menu.exec(button.mapToGlobal(QPoint(button.width() - menu.sizeHint().width(), button.height() + 4)))
 
     def create_paper_group(self):
         dialog = QInputDialog(self)
@@ -614,6 +628,7 @@ class Window(QMainWindow):
         rename = menu.addAction(QIcon(str(assets / "paper-edit.svg")), "修改论文标题")
         rename.triggered.connect(lambda: self.rename_paper(item))
         group_menu = menu.addMenu("移动到分组")
+        group_menu.menuAction().setIcon(QIcon(str(assets / "paper-move.svg")))
         for group_id, name in [(None, "未分组")] + [(g["id"], g["name"]) for g in self.library.list_groups()]:
             group_action = group_menu.addAction(name)
             group_action.setCheckable(True)
@@ -1045,6 +1060,7 @@ class Window(QMainWindow):
             return False
         self.profile_config["theme"] = theme
         apply_theme(theme)
+        self.centralWidget().update()
         self.update_theme_art()
         self.view.refresh_theme()
         for browser in self.findChildren(MarkdownBrowser):
@@ -1115,7 +1131,12 @@ class Window(QMainWindow):
         http_hint.setWordWrap(True)
         form.addRow(http_hint)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(dialog.accept); buttons.rejected.connect(dialog.reject); form.addRow(buttons)
+        buttons.accepted.connect(dialog.accept); buttons.rejected.connect(dialog.reject)
+        import_button = QPushButton("导入配置"); import_button.setObjectName("ImportModelConfig")
+        export_button = QPushButton("导出配置"); export_button.setObjectName("ExportModelConfig")
+        footer = QHBoxLayout(); footer.addWidget(import_button); footer.addWidget(export_button)
+        footer.addStretch(1); footer.addWidget(buttons)
+        form.addRow(footer)
         test = QPushButton("测试模型连接")
         status = MarkdownBrowser(); status.setMinimumHeight(110); status.set_markdown("使用当前输入测试，无需先保存；会向 /chat/completions 发送一条简短的流式请求，可能产生少量费用。")
         form.addRow(test); form.addRow(status)
@@ -1124,9 +1145,8 @@ class Window(QMainWindow):
             profile.update(name=name.text().strip() or "未命名模型", endpoint=endpoint.text().strip(), model=model.text().strip(), max_input_chars=limit.value())
             secrets[profile["id"]] = key.text()
             picker.setItemText(selected[0], profile["name"])
-        def choose(index):
-            if index < 0: return
-            stash(); selected[0] = index; profile = draft["profiles"][index]
+        def show_profile(index):
+            selected[0] = index; profile = draft["profiles"][index]
             name.setText(profile["name"]); endpoint.setText(profile["endpoint"]); model.setText(profile["model"]); limit.setValue(input_limit(profile))
             try:
                 secret = secrets.get(profile["id"])
@@ -1134,6 +1154,9 @@ class Window(QMainWindow):
                 key.setText(secret)
             except Exception as exc: key.clear(); self.error(str(exc))
             status.set_markdown("使用当前配置测试连接，结果不会自动保存。")
+        def choose(index):
+            if index < 0: return
+            stash(); show_profile(index)
         picker.currentIndexChanged.connect(choose)
         def add_profile():
             stash(); profile = new_profile(); draft["profiles"].append(profile)
@@ -1144,16 +1167,67 @@ class Window(QMainWindow):
             index = selected[0]; draft["profiles"].pop(index)
             picker.blockSignals(True); picker.removeItem(index); selected[0] = min(index, len(draft["profiles"])-1)
             picker.setCurrentIndex(selected[0]); picker.blockSignals(False)
-            profile = draft["profiles"][selected[0]]
-            name.setText(profile["name"]); endpoint.setText(profile["endpoint"]); model.setText(profile["model"]); limit.setValue(input_limit(profile))
-            try: key.setText(secrets.get(profile["id"], keyring.get_password("PaperReader", profile["key_account"]) or ""))
-            except Exception as exc: key.clear(); self.error(str(exc))
+            show_profile(selected[0])
         add.clicked.connect(add_profile); remove.clicked.connect(remove_profile)
+        def import_config():
+            path, _ = QFileDialog.getOpenFileName(dialog, "导入模型配置", "", "JSON 文件 (*.json)")
+            if not path: return
+            try:
+                source = Path(path)
+                if source.stat().st_size > 1024 * 1024:
+                    raise ValueError("配置文件超过 1 MB。")
+                profiles, active_id, imported_secrets = import_profiles(json.loads(source.read_text(encoding="utf-8")))
+                draft["profiles"] = profiles; draft["active_id"] = active_id
+                secrets.clear(); secrets.update(imported_secrets)
+                picker.blockSignals(True); picker.clear(); picker.addItems([p["name"] for p in profiles])
+                index = next(i for i, p in enumerate(profiles) if p["id"] == active_id)
+                picker.setCurrentIndex(index); picker.blockSignals(False)
+                show_profile(index)
+                status.set_markdown("已载入模型配置。点击“保存”后生效；未随文件导入的 API Key 需要重新填写。")
+            except (OSError, UnicodeError, ValueError, TypeError) as exc:
+                self.error("导入配置失败：" + str(exc))
+        def export_config():
+            stash()
+            prompt = QMessageBox(dialog)
+            prompt.setWindowTitle("导出模型配置")
+            prompt.setText("导出的配置文件是否包含 API Key？")
+            prompt.setInformativeText("包含密钥时，文件会以明文保存 API Key。建议只在安全的本地位置保存。")
+            without_key = prompt.addButton("不包含密钥", QMessageBox.ButtonRole.AcceptRole)
+            with_key = prompt.addButton("包含 API Key（明文）", QMessageBox.ButtonRole.ActionRole)
+            prompt.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+            prompt.setDefaultButton(without_key)
+            prompt.exec()
+            choice = prompt.clickedButton()
+            if choice not in (without_key, with_key): return
+            path, _ = QFileDialog.getSaveFileName(dialog, "导出模型配置", "PaperReader-模型配置.json", "JSON 文件 (*.json)")
+            if not path: return
+            try:
+                included = {}
+                if choice is with_key:
+                    for profile in draft["profiles"]:
+                        secret = secrets.get(profile["id"])
+                        if secret is None:
+                            secret = keyring.get_password("PaperReader", profile["key_account"]) or ""
+                        if secret: included[profile["id"]] = secret
+                document = export_profiles(draft, included)
+                target = Path(path)
+                descriptor, temporary = tempfile.mkstemp(prefix=".PaperReader-", suffix=".tmp", dir=target.parent)
+                try:
+                    with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+                        json.dump(document, file, ensure_ascii=False, indent=2)
+                        file.write("\n")
+                    os.replace(temporary, target)
+                finally:
+                    if os.path.exists(temporary): os.unlink(temporary)
+                status.set_markdown("模型配置已导出。" + (" 文件包含明文 API Key，请妥善保管。" if choice is with_key else " 文件不包含 API Key。"))
+            except (OSError, ValueError) as exc:
+                self.error("导出配置失败：" + str(exc))
+        import_button.clicked.connect(import_config); export_button.clicked.connect(export_config)
         def test_connection():
             config = {"endpoint": endpoint.text().strip(), "model": model.text().strip(), "max_input_chars": limit.value()}
             secret = key.text()
             test.setEnabled(False); buttons.setEnabled(False); dialog.testing = True
-            for widget in (picker, add, remove, name, endpoint, model, key, limit): widget.setEnabled(False)
+            for widget in (picker, add, remove, import_button, export_button, name, endpoint, model, key, limit): widget.setEnabled(False)
             status.set_markdown("正在测试流式 Chat Completions 接口…")
             job = Job(lambda emit: complete(config, secret, [{"role": "user", "content": "Reply only OK."}], on_chunk=emit), streaming=True)
             chunks = []
@@ -1163,7 +1237,7 @@ class Window(QMainWindow):
             dialog.test_job = job
             def finished(message):
                 test.setEnabled(True); buttons.setEnabled(True); dialog.testing = False
-                for widget in (picker, add, remove, name, endpoint, model, key, limit): widget.setEnabled(True)
+                for widget in (picker, add, remove, import_button, export_button, name, endpoint, model, key, limit): widget.setEnabled(True)
                 status.set_markdown(message)
             job.signals.done.connect(lambda text: finished("**连接成功**：模型已返回流式文本响应。\n\n" + text))
             job.signals.error.connect(lambda text: finished("连接失败：" + text))
@@ -1357,7 +1431,10 @@ class Window(QMainWindow):
         self.quote_box.hide()
 
     def ask(self):
-        if not self.paper or self.busy or not self.question.toPlainText().strip(): return
+        if not self.paper:
+            self.chat.set_markdown(f"### {self.reading_assistant_name}\n\n请先导入或打开一篇论文，再使用论文追问。")
+            return
+        if self.busy or not self.question.toPlainText().strip(): return
         question = self.question.toPlainText().strip(); paper = self.paper
         pack = get_theme(self.profile_config["theme"])
         prompt = (f"引用选区：{self.quote}\n\n" if self.quote else "") + question

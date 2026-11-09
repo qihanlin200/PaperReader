@@ -3,7 +3,7 @@ QWidget#TopBar QPushButton#Quiet { background: #332218; border-color: #694a32; c
 QWidget#TopBar QPushButton#Quiet:hover { background: #52351f; }
 QLabel#BrandLabel { font-family: Georgia; font-size: 22px; }
 QLabel#ReaderPaperTitle, QLabel#ReaderTitleDivider { color: #c9a98d; }
-QWidget#WorkRail { background: #291c15; border-right-color: #79573c; }
+QWidget#WorkRail { background: #291c15; border: 1px solid #79573c; border-radius: 8px; }
 QToolButton#WorkRailButton:hover { background: #563927; border-color: #92684f; }
 QToolButton#WorkRailButton[active="true"] { background: #69442e; border-color: #d3a17b; }
 QWidget#LibraryPanel, QWidget#ReaderPanel, QWidget#WorkspacePanel, QWidget#ChatPanel {

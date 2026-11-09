@@ -1,0 +1,5 @@
+QWidget#TopBar { background: rgba(17, 26, 40, 238); }
+QWidget#WorkRail { background: rgba(12, 20, 32, 200); }
+QWidget#LibraryPanel { background: rgba(14, 21, 32, 200); }
+QWidget#ReaderPanel, QWidget#WorkspacePanel, QWidget#ChatPanel { background: rgba(11, 16, 25, 210); }
+QTextBrowser { background: rgba(16, 24, 36, 238); }

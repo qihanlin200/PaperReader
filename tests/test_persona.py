@@ -24,6 +24,8 @@ class PersonaTests(unittest.TestCase):
         self.assertNotIn('蛤蟆丸', neutral[0]['content'])
         self.assertIn('Explain the paper.', neutral[0]['content'])
         self.assertEqual(assistant_name('dark'), '无情的阅读机器')
+        self.assertEqual(get_theme('dark').name, '星空主题')
+        self.assertTrue(get_theme('dark').workspace_background.is_file())
         result = with_persona(original, theme='naruto')
         self.assertIn(assistant_name('naruto'), result[0]['content'])
         self.assertIn('Explain the paper.', result[0]['content'])

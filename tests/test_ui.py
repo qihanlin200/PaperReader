@@ -74,9 +74,9 @@ class StreamingUITests(unittest.TestCase):
         self.window.reload(self.paper['id'])
         self.assertEqual(self.window.list.count(), 2)
 
-        self.window.paper_search.setText('other')
-        self.assertEqual(self.window.list.count(), 2)
-        self.window.paper_search.returnPressed.emit()
+        with patch.object(self.library, 'list_metadata', wraps=self.library.list_metadata) as list_metadata:
+            self.window.paper_search.setText('other')
+            list_metadata.assert_not_called()
         self.assertEqual(self.window.list.count(), 1)
         self.assertEqual(self.window.papers[0]['id'], other['id'])
         self.window.paper_search.clear()
@@ -139,7 +139,6 @@ class StreamingUITests(unittest.TestCase):
         self.window.reload(self.paper['id'], reopen=False)
         self.assertEqual(self.window.list.count(), 2)
         self.window.paper_search.setText(self.window.paper['title'])
-        self.window.paper_search.returnPressed.emit()
         self.assertEqual(self.window.list.count(), 2)
         self.window.paper_search.clear()
         self.assertEqual(self.window.list.count(), 2)
@@ -153,12 +152,10 @@ class StreamingUITests(unittest.TestCase):
         self.window.show(); self.app.processEvents()
         self.assertEqual(self.window.windowTitle(), 'PaperReader · 读起来不烧心')
         self.assertEqual(self.window.work_rail.width(), 48)
-        controls = (self.window.library_rail_button, self.window.import_pdf_button,
-                    self.window.import_link_button)
-        self.assertEqual([control.size().width() for control in controls], [38, 38, 38])
+        controls = (self.window.library_rail_button, self.window.settings_rail_button)
+        self.assertEqual([control.size().width() for control in controls], [38, 38])
         centers = [control.geometry().center() for control in controls]
-        self.assertEqual([point.x() for point in centers], [centers[0].x()] * 3)
-        self.assertEqual(centers[1].y() - centers[0].y(), centers[2].y() - centers[1].y())
+        self.assertEqual(centers[0].x(), centers[1].x())
         self.assertGreater(self.window.splitter.sizes()[0], 0)
         self.assertTrue(self.window.library_rail_button.property('active'))
         self.assertIsNone(self.window.findChild(QLabel, 'LibraryRailHint'))
@@ -173,12 +170,22 @@ class StreamingUITests(unittest.TestCase):
         self.assertEqual(self.window.reader_paper_title.toolTip(), long_title)
         self.assertTrue(self.window.reader_paper_title.text().endswith('…'))
 
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QMenu
+        QTimer.singleShot(0, lambda: self.window.findChild(QMenu, 'LibraryAddMenu').close())
+        self.window.library_add_button.click()
+        menu = self.window.findChild(QMenu, 'LibraryAddMenu')
+        self.assertIsNotNone(menu)
+        self.assertEqual([action.text() for action in menu.actions()],
+                         ['本地论文导入', '网页链接导入', '创建分组'])
+        self.assertTrue(all(not action.icon().isNull() for action in menu.actions()))
         with patch('paperreader.ui.window.QFileDialog.getOpenFileNames', return_value=([], '')) as choose_pdf:
-            self.window.import_pdf_button.click()
+            menu.actions()[0].trigger()
             choose_pdf.assert_called_once()
-        with patch('paperreader.ui.window.QInputDialog.exec', return_value=0) as choose_link:
-            self.window.import_link_button.click()
-            choose_link.assert_called_once()
+        with patch('paperreader.ui.window.QInputDialog.exec', return_value=0) as choose_dialog:
+            menu.actions()[1].trigger()
+            menu.actions()[2].trigger()
+            self.assertEqual(choose_dialog.call_count, 2)
         with patch('paperreader.ui.window.SettingsDialog.exec', return_value=0) as settings:
             self.window.settings_rail_button.click()
             settings.assert_called_once()
@@ -1040,7 +1047,7 @@ class StreamingUITests(unittest.TestCase):
         self.assertFalse(self.window.quote_box.isHidden())
         self.window.clear_quote()
         self.assertTrue(self.window.quote_box.isHidden())
-        self.window.fit_width()
+        next(button for button in self.window.findChildren(QPushButton) if button.text() == '校准').click()
         self.assertAlmostEqual(self.window.view.scale,
             max(.5, min(4, (self.window.view.viewport().width()-28)/self.window.doc[0].rect.width)))
 
@@ -1095,6 +1102,39 @@ class StreamingUITests(unittest.TestCase):
         self.assertFalse(self.window.question.findChildren(QTabWidget))
         self.window.question.setPlainText('第一行\n第二行')
         self.assertEqual(self.window.question.toPlainText(), '第一行\n第二行')
+
+    def test_question_enter_sends_and_platform_shortcuts_insert_newline(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QTextCursor
+        from PySide6.QtTest import QTest
+        from paperreader.ui.composer import QuestionEdit
+
+        for macos, modifier in ((False, Qt.KeyboardModifier.ControlModifier),
+                                (True, Qt.KeyboardModifier.AltModifier)):
+            with self.subTest(macos=macos), patch('paperreader.ui.composer.MACOS', macos):
+                editor = QuestionEdit()
+                submitted = []
+                editor.submitRequested.connect(lambda: submitted.append(True))
+                editor.show()
+                editor.setPlainText('第一行')
+                cursor = editor.textCursor()
+                cursor.movePosition(QTextCursor.MoveOperation.End)
+                editor.setTextCursor(cursor)
+                QTest.keyClick(editor, Qt.Key.Key_Return, modifier)
+                self.assertEqual(editor.toPlainText(), '第一行\n')
+                self.assertEqual(submitted, [])
+                QTest.keyClick(editor, Qt.Key.Key_Enter)
+                self.assertEqual(submitted, [True])
+                self.assertEqual(editor.toPlainText(), '第一行\n')
+                editor.close()
+
+        self.window.show(); self.app.processEvents()
+        self.window.question.setPlainText('键盘提交的问题')
+        with patch('paperreader.ui.window.complete', side_effect=self.model):
+            QTest.keyClick(self.window.question, Qt.Key.Key_Return)
+            self.wait()
+        self.assertEqual(self.window.question.toPlainText(), '')
+        self.assertEqual(self.library.all()[0]['messages'][0]['question'], '键盘提交的问题')
 
     def test_model_switch_persistence_and_inset_controls(self):
         from paperreader.services.profiles import new_profile
@@ -1159,6 +1199,9 @@ class StreamingUITests(unittest.TestCase):
             'paperreader.ui.window.QFileDialog.getSaveFileName', return_value=(str(path), "")
         ):
             self.window.paper_context_menu(position)
+        move_icon = menu.addMenu.return_value.menuAction.return_value.setIcon.call_args.args[0]
+        self.assertFalse(move_icon.isNull())
+        self.assertFalse(move_icon.pixmap(16, 16).isNull())
         exported = path.read_text(encoding="utf-8")
         self.assertIn("右击论文的笔记", exported)
         self.assertNotIn("正在阅读的论文笔记", exported)
@@ -1250,13 +1293,70 @@ class StreamingUITests(unittest.TestCase):
         self.assertEqual(saved_keys[self.window.config['key_account']], 'new-secret')
         self.assertNotIn('new-secret', str(config))
 
+    def test_model_settings_import_stays_draft_until_save(self):
+        from PySide6.QtWidgets import QDialog, QFormLayout, QLineEdit
+        from paperreader.services.profiles import export_profiles, new_profile
+        profile = new_profile()
+        profile.update(name='导入模型', endpoint='http://localhost:8000/v1', model='local-model')
+        document = export_profiles({'profiles': [profile], 'active_id': profile['id']})
+        path = os.path.join(self.temp.name, 'models.json')
+        with open(path, 'w', encoding='utf-8') as file:
+            json.dump(document, file)
+        dialog = QDialog(self.window)
+        form = QFormLayout(dialog)
+        save = self.window.build_model_settings(dialog, form)
+        import_button = dialog.findChild(QPushButton, 'ImportModelConfig')
+        export_button = dialog.findChild(QPushButton, 'ExportModelConfig')
+        self.assertIsNotNone(import_button)
+        self.assertIsNotNone(export_button)
+        with patch('paperreader.ui.window.QFileDialog.getOpenFileName', return_value=(path, 'JSON 文件 (*.json)')):
+            import_button.click()
+        self.assertEqual(dialog.findChild(QLineEdit, 'ModelName').text(), 'local-model')
+        self.assertNotEqual(self.library.config().get('model'), 'local-model')
+        with patch('paperreader.ui.window.keyring.set_password'):
+            save()
+        self.assertEqual(self.library.config()['profiles'][0]['model'], 'local-model')
+        self.assertFalse(self.errors)
+
+    def test_model_settings_export_defaults_to_no_api_key(self):
+        from PySide6.QtWidgets import QDialog, QFormLayout, QMessageBox
+        dialog = QDialog(self.window)
+        self.window.build_model_settings(dialog, QFormLayout(dialog))
+        path = os.path.join(self.temp.name, 'export.json')
+        def choose_default(message):
+            message.defaultButton().click()
+        with patch.object(QMessageBox, 'exec', choose_default), \
+             patch('paperreader.ui.window.QFileDialog.getSaveFileName', return_value=(path, 'JSON 文件 (*.json)')):
+            dialog.findChild(QPushButton, 'ExportModelConfig').click()
+        with open(path, encoding='utf-8') as file:
+            document = json.load(file)
+        self.assertNotIn('api_key', str(document))
+        self.assertEqual(document['profiles'][0]['model'], self.window.config['model'])
+        self.assertFalse(self.errors)
+
+    def test_followup_without_open_paper_replies_in_chat(self):
+        self.window.paper = None
+        self.window.question.setPlainText('这篇论文讲什么？')
+        with patch('paperreader.ui.window.complete') as complete:
+            self.window.ask()
+        complete.assert_not_called()
+        self.assertIn('请先导入或打开一篇论文', self.window.chat.toPlainText())
+        self.assertEqual(self.window.question.toPlainText(), '这篇论文讲什么？')
+
     def test_theme_switch_preserves_document_and_restores_on_restart(self):
         from paperreader.ui.theme import ACCENT, theme_color
+        from paperreader.services.themes import get_theme
+        self.window.show(); self.app.processEvents()
+        background = self.window.centralWidget()
+        self.assertEqual(background._background_path, get_theme('dark').workspace_background)
+        self.assertFalse(background._background.isNull())
         self.window.summary.set_markdown('## 研究问题\n\n保留正文与 #66ddda。')
         original = self.window.summary.toPlainText()
         document = self.window.doc
         self.assertTrue(self.window.sage_card.isHidden())
         self.assertTrue(self.window.change_theme('naruto'))
+        self.app.processEvents()
+        self.assertIsNone(background._background_path)
         self.assertFalse(self.window.sage_card.isHidden())
         self.assertIs(self.window.doc, document)
         self.assertEqual(self.window.summary.toPlainText(), original)
@@ -1268,6 +1368,8 @@ class StreamingUITests(unittest.TestCase):
         finally:
             reopened.close()
         self.assertTrue(self.window.change_theme('dark'))
+        self.app.processEvents()
+        self.assertEqual(background._background_path, get_theme('dark').workspace_background)
         self.assertTrue(self.window.sage_card.isHidden())
         heading = self.window.summary.document().find('研究问题')
         self.assertEqual(heading.charFormat().foreground().color().name(), ACCENT)

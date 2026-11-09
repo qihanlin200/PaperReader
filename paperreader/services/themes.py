@@ -32,6 +32,7 @@ class Theme:
     pdf_ink: str = "#000000"
     banner_crop: tuple = (0.0, 1.0)
     banner_background: str = "#111a28"
+    workspace_background: Optional[Path] = None
     brand_icon: Optional[Path] = None
     header_height: int = 58
     panel_inset: int = 0
@@ -100,6 +101,7 @@ def _load_theme(folder):
         pdf_ink=_color(data.get("pdf_ink", "#000000")),
         banner_crop=(crop_top, crop_bottom),
         banner_background=_color(data.get("banner_background", "#111a28")),
+        workspace_background=_asset(folder, data.get("workspace_background")),
         brand_icon=_asset(folder, data.get("brand_icon")),
         header_height=_dimension(data.get("header_height", 58), 48, 180),
         panel_inset=_dimension(data.get("panel_inset", 0), 0, 8),
@@ -118,7 +120,7 @@ def load_themes(root=THEME_ROOT):
             themes[folder.name] = _load_theme(folder)
         except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
             _LOGGER.warning("Skipping invalid theme %s: %s", folder.name, exc)
-    default = themes.pop(DEFAULT_THEME_ID, Theme(DEFAULT_THEME_ID, "深色主题", "无情的阅读机器"))
+    default = themes.pop(DEFAULT_THEME_ID, Theme(DEFAULT_THEME_ID, "星空主题", "无情的阅读机器"))
     return {DEFAULT_THEME_ID: default, **themes}
 
 
