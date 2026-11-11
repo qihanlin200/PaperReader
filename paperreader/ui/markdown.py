@@ -37,6 +37,7 @@ class MathResult(QObject):
 
 
 class MarkdownBrowser(QTextBrowser):
+    normalize_tables = True
     followUpRequested = Signal(str)
     mathUpdated = Signal()
     headingsChanged = Signal()
@@ -72,6 +73,9 @@ class MarkdownBrowser(QTextBrowser):
     def setHtml(self, text):
         self._body_html = text
         super().setHtml(self._status_html + text)
+        if not self.normalize_tables:
+            return
+
         def visit(frame):
             for child in frame.childFrames():
                 if isinstance(child, QTextTable):

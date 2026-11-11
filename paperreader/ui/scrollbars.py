@@ -1,6 +1,6 @@
 """Reveal scrollbars only while the pointer is inside their scroll area."""
 import weakref
-from PySide6.QtCore import QObject, QEvent, QTimer
+from PySide6.QtCore import QObject, QTimer
 from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import QApplication, QAbstractScrollArea, QGraphicsOpacityEffect, QWidget
 
@@ -10,7 +10,12 @@ class HoverScrollbars(QObject):
         super().__init__(app)
         self.areas = weakref.WeakSet()
         self.active = None
-        app.installEventFilter(self)
+        # A Python application event filter receives Chromium's internal QObject
+        # construction events before PySide can safely wrap those objects.
+        self.timer = QTimer(self)
+        self.timer.setInterval(80)
+        self.timer.timeout.connect(self.refresh_pointer)
+        self.timer.start()
 
     def register(self, area):
         if area in self.areas: return
@@ -38,19 +43,16 @@ class HoverScrollbars(QObject):
         return None
 
     def refresh_pointer(self):
-        self.set_active(self.owner(QApplication.widgetAt(QCursor.pos())))
-
-    def eventFilter(self, watched, event):
-        kind = event.type()
-        if kind in (QEvent.Type.Polish, QEvent.Type.Show) and isinstance(watched, QAbstractScrollArea):
-            self.register(watched)
-        elif kind == QEvent.Type.Enter and isinstance(watched, QWidget):
-            area = self.owner(watched)
-            if area: self.register(area)
+        window = QApplication.activeWindow()
+        if window is not None:
+            for area in window.findChildren(QAbstractScrollArea):
+                if area.isVisible():
+                    self.register(area)
+        area = self.owner(QApplication.widgetAt(QCursor.pos())) if window is not None else None
+        if area is not None:
+            self.register(area)
+        if area is not self.active:
             self.set_active(area)
-        elif kind in (QEvent.Type.Leave, QEvent.Type.WindowDeactivate):
-            QTimer.singleShot(0, self.refresh_pointer)
-        return False
 
 
 def install_hover_scrollbars(app):

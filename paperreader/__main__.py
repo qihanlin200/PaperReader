@@ -7,7 +7,7 @@ if __name__ == "__main__":
 import signal
 import sys
 from pathlib import Path
-from PySide6.QtCore import QLockFile, QTimer
+from PySide6.QtCore import QLockFile, QTimer, Qt
 from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtGui import QIcon
 from platformdirs import user_data_dir
@@ -16,6 +16,7 @@ from paperreader.services.instance import restart_previous
 
 def main():
     timings = {"imports": round(time.perf_counter() - _started, 3)}
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
     app = QApplication(sys.argv)
     timings["application"] = round(time.perf_counter() - _started, 3)
     app.setApplicationName("PaperReader")

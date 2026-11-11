@@ -243,6 +243,61 @@ QToolButton#WorkRailButton[active="true"] { background: #17313c; border-color: #
 QToolButton#WorkRailButton:focus { border-color: #66ddda; }
 QWidget#LibraryPanel { background: #0e1520; }
 QWidget#PanelHeader { background: #101824; border-bottom: 1px solid #263345; }
+QWidget#ResearchWorkbench { background: #0e1520; border: 1px solid #263345; border-radius: 12px; }
+QScrollArea#ResearchDiscussionScroll, QWidget#ResearchDiscussionPanel { border: 0; background: transparent; }
+QGraphicsView#ResearchMindmapCanvas { border: 1px solid #263345; border-radius: 8px; }
+QLabel#ResearchOverviewTitle { font-size: 16px; font-weight: bold; }
+QLabel#ResearchOverviewAccent { color: #66ddda; }
+QLabel#ResearchOverviewMuted { color: #a6b8ce; }
+QLabel#ResearchTaskName { font-weight: bold; }
+QLabel#ResearchTaskMark { color: #092426; background: #66ddda; border-radius: 9px; padding: 0; font-weight: bold; }
+QLabel#ResearchTaskBadge, QLabel#ResearchTaskDoneBadge, QLabel#ResearchTaskActiveBadge { border-radius: 5px; padding: 2px 5px; }
+QLabel#ResearchTaskBadge { color: #e4ebf5; background: #364458; }
+QLabel#ResearchTaskDoneBadge { color: #66ddda; background: #17313c; }
+QLabel#ResearchTaskActiveBadge { color: #092426; background: #66ddda; font-weight: bold; }
+QFrame#ResearchOverviewDivider { background: #364458; border: 0; }
+QPushButton#ResearchSubtaskRow, QPushButton#ResearchSubtaskRunning { background: #172332; border: 1px solid #364458; border-radius: 8px; padding: 0; }
+QPushButton#ResearchSubtaskRunning { background: #17313c; border: 1px solid #66ddda; }
+QPushButton#ResearchSubtaskRow:hover, QPushButton#ResearchSubtaskRow:focus,
+QPushButton#ResearchSubtaskRunning:hover, QPushButton#ResearchSubtaskRunning:focus { background: #203849; border-color: #66ddda; }
+QPushButton#ResearchEvidencePoint { background: transparent; border: 1px solid transparent; border-radius: 5px; padding: 0; }
+QPushButton#ResearchEvidencePoint:hover, QPushButton#ResearchEvidencePoint:focus { background: #17313c; border-color: #364458; }
+QWidget#ResearchOverview { background: #101824; border: 1px solid #263345; border-radius: 10px; }
+QWidget#ResearchOverview:hover { border-color: #66ddda; }
+QLabel#ResearchTaskTitle { font-size: 16px; font-weight: 650; color: #eaf4ff; }
+QTextEdit#ResearchComposer QComboBox { padding: 2px 30px 2px 8px; min-height: 18px; }
+QTextEdit#ResearchComposer QPushButton { padding: 2px 10px; min-height: 18px; }
+QPushButton#ResearchSearchToggle { color: #a6b8ce; background: #101824; border: 1px solid #3c5369; border-radius: 7px; }
+QPushButton#ResearchSearchToggle:hover, QPushButton#ResearchSearchToggle:focus { border-color: #66ddda; }
+QPushButton#ResearchSearchToggle:checked { color: #66ddda; background: #17313c; border-color: #3c7180; }
+QCheckBox#ResearchCheckBox { spacing: 8px; padding: 4px 2px; }
+QCheckBox#ResearchCheckBox::indicator { width: 16px; height: 16px; border-radius: 4px; border: 1px solid #8da5bb; background: #101824; }
+QCheckBox#ResearchCheckBox::indicator:checked { border-color: #66ddda; background: #66ddda; }
+QCheckBox#ResearchCheckBox::indicator:hover { border-color: #66ddda; }
+QLabel#ResearchTaskSubtitle { color: #a6b8ce; font-size: 12px; padding: 3px 0; }
+QWidget#ResearchTimeline, QScrollArea#TraceScroll, QScrollArea#TraceScroll > QWidget > QWidget { border: 0; background: transparent; }
+QFrame#TraceRunHeader, QFrame#TraceEvent, QFrame#TraceEventActive { background: #101824; border: 1px solid #263345; border-radius: 10px; }
+QFrame#TraceEventActive { border-color: #66ddda; }
+QLabel#TraceTitle { color: #eaf4ff; font-weight: 600; }
+QLabel#TraceMuted { color: #a6b8ce; font-size: 12px; }
+QLabel#TraceStatus { color: #66ddda; font-weight: 600; }
+QLabel#TraceDuration { color: #a6d7da; background: #17313c; border: 1px solid #3c7180; border-radius: 9px; padding: 2px 7px; font-size: 11px; }
+QFrame#TraceDivider { background: #3c5369; }
+QPushButton#TraceExpand { background: transparent; border: 0; padding: 0 3px; min-height: 18px; color: #a6b8ce; }
+QPushButton#TraceExport { color: #66ddda; background: #101824; border: 1px solid #66ddda; border-radius: 8px; }
+QPushButton#TraceExport:hover { background: #17313c; }
+QLabel#ResearchStatus { padding: 4px 9px; background: #17313c; color: #66ddda; border-radius: 9px; }
+QLabel#ResearchPercentage { font-size: 15px; font-weight: 600; }
+QTabBar#ResearchTabs::tab { color: #a6b8ce; background: transparent; padding: 9px 12px; border-bottom: 2px solid transparent; }
+QTabBar#ResearchTabs::tab:selected { color: #66ddda; border-bottom-color: #66ddda; }
+QPushButton#ResearchEvidenceCard { background: #101824; border: 1px solid #263345; border-radius: 10px; padding: 0; }
+QPushButton#ResearchEvidenceCard:hover, QPushButton#ResearchEvidenceCard:focus { background: #17313c; border-color: #66ddda; }
+QLabel#ResearchEvidenceTitle { font-size: 15px; font-weight: bold; }
+QLabel#ResearchEvidenceMeta { color: #a6b8ce; }
+QLabel#ResearchEvidenceLink { color: #66ddda; }
+QTextBrowser#ResearchConversation { border: 0; background: transparent; }
+QTextEdit#ResearchComposer { background: #162130; border: 1px solid #3c7180; border-radius: 11px; padding: 8px; }
+QTextEdit#ResearchComposer:focus { border-color: #66ddda; }
 QLabel#PanelTitle { color: #e0eaf6; font-weight: 600; }
 QLabel#AccentLabel { color: #66ddda; font-size: 11px; }
 QPushButton { background: #162130; border: 1px solid #2c3d50; border-radius: 6px; padding: 7px 12px; min-height: 19px; }
@@ -266,6 +321,7 @@ QListWidget { background: transparent; border: none; outline: none; padding: 4px
 QListWidget::item { padding: 12px 9px; margin: 3px 0; border-radius: 6px; border: 1px solid transparent; }
 QListWidget::item:hover { background: #142130; }
 QListWidget::item:selected { background: #172c38; color: #e0f4f2; border-color: #355665; }
+QListWidget#ResearchTopicList::item, QListWidget#ResearchSourceList::item { min-height: 20px; padding: 3px 6px; margin: 1px 0; }
 QListWidget#PaperList { padding: 0; }
 QListWidget#PaperList::item { min-height: 26px; padding: 5px 4px; margin: 2px 0; }
 QToolButton#PaperFavoriteButton { background: transparent; border: 1px solid transparent; border-radius: 5px; padding: 0; }

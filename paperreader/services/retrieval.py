@@ -60,10 +60,12 @@ class Passage:
 
 
 class PassageIndex:
-    def __init__(self, doc):
+    def __init__(self, doc, *, check=None):
         self.passages = []
         flags = fitz.TEXTFLAGS_DICT & ~fitz.TEXT_PRESERVE_IMAGES
         for page_number, page in enumerate(doc):
+            if check is not None:
+                check()
             # Text-only blocks preserve column boundaries and per-line coordinates.
             for block in page.get_text("dict", flags=flags, sort=True)["blocks"]:
                 lines, rects, length = [], [], 0
@@ -82,7 +84,7 @@ class PassageIndex:
         self.counts = [Counter(terms(passage.text)) for passage in self.passages]
         self.document_frequency = Counter(term for counts in self.counts for term in counts)
 
-    def context(self, question, budget, *, selection=None, quote=""):
+    def ranked(self, question, *, selection=None, quote=""):
         query = set(terms(question + " " + quote))
         for topic, synonyms in TOPICS.items():
             if topic in question:
@@ -102,9 +104,13 @@ class PassageIndex:
 
         ranked = [(rank(i), passage) for i, passage in enumerate(self.passages)]
         ranked.sort(key=lambda match: match[0], reverse=True)
-        candidates = ([selection] if selection else []) + [
+        return [
             passage for score, passage in ranked if score > (0, 0)
         ]
+
+    def context(self, question, budget, *, selection=None, quote=""):
+        candidates = ([selection] if selection else []) + self.ranked(
+            question, selection=selection, quote=quote)
         parts, sources = [], {}
         for passage in candidates:
             if len(sources) >= 30:

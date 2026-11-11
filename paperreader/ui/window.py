@@ -8,7 +8,7 @@ from PySide6.QtCore import QObject, QPoint, QRunnable, QSize, QThreadPool, Signa
 from PySide6.QtGui import QIcon, QPixmap, QTextCursor
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QListView, QListWidget, QSplitter, QScrollArea, QTextBrowser, QTextEdit, QLineEdit, QLabel,
-    QFileDialog, QInputDialog, QMessageBox, QDialog, QDialogButtonBox, QTabWidget, QApplication, QComboBox, QMenu, QProgressDialog, QSpacerItem, QSizePolicy)
+    QFileDialog, QInputDialog, QMessageBox, QDialog, QDialogButtonBox, QTabWidget, QStackedWidget, QApplication, QComboBox, QMenu, QProgressDialog, QSpacerItem, QSizePolicy)
 from PySide6.QtCore import Qt
 from paperreader.services.library import Library
 from paperreader.services.network import complete, download
@@ -129,13 +129,20 @@ class Window(QMainWindow):
         self.library_rail_button.clicked.connect(self.toggle_library)
         self.library_rail_button.set_active(True)
         rail_layout.addWidget(self.library_rail_button)
+        self.research_rail_button = WorkRailButton("research", "研究模式")
+        self.research_rail_button.clicked.connect(self.toggle_research)
+        rail_layout.addWidget(self.research_rail_button)
+        self.research_workspace = None
         rail_layout.addStretch()
         self.settings_rail_button = WorkRailButton("settings", "系统设置")
         self.settings_rail_button.clicked.connect(self.settings)
         rail_layout.addWidget(self.settings_rail_button)
         self.work_rail = rail
         body_row.addWidget(rail)
-        split = PaneSplitter(); self.splitter = split; body_row.addWidget(split, 1)
+        split = PaneSplitter(); self.splitter = split
+        self.workspace_stack = QStackedWidget()
+        self.workspace_stack.addWidget(split)
+        body_row.addWidget(self.workspace_stack, 1)
         layout.addWidget(body, 1)
         split.splitterMoved.connect(self.sync_library_rail)
         split.paneToggled.connect(self.sync_library_rail)
@@ -332,6 +339,8 @@ class Window(QMainWindow):
             self.model_selector.addItem(profile["name"] + (" · " + profile["model"] if profile["model"] else ""), profile["id"])
         self.model_selector.setCurrentIndex(self.model_selector.findData(self.profile_config["active_id"]))
         self.model_selector.blockSignals(False)
+        if self.research_workspace is not None:
+            self.research_workspace.refresh_models()
 
     def select_model(self, index):
         identifier = self.model_selector.itemData(index)
@@ -425,13 +434,59 @@ class Window(QMainWindow):
         current = self.paper["id"] if self.paper else None
         self.reload(current, reopen=False, refresh_metadata=False)
 
+    def toggle_research(self):
+        if self.workspace_stack.currentIndex():
+            self.show_reader()
+            return
+        if self.research_workspace is None:
+            from paperreader.ui.research import ResearchWorkspace
+            try:
+                self.research_workspace = ResearchWorkspace(self)
+            except (OSError, ValueError) as exc:
+                self.error("无法打开研究空间：" + str(exc))
+                return
+            self.workspace_stack.addWidget(self.research_workspace)
+        self.workspace_stack.setCurrentWidget(self.research_workspace)
+        self.research_rail_button.set_active(True)
+        self.library_rail_button.set_active(False)
+        self.library_rail_button.setToolTip("返回论文阅读")
+
+    def show_reader(self):
+        self.workspace_stack.setCurrentWidget(self.splitter)
+        self.research_rail_button.set_active(False)
+        self.sync_library_rail()
+
+    def open_research_paper(self, identifier, page=None, rects=()):
+        try:
+            path = self.library.pdf_path({"id": identifier})
+            with fitz.open(path) as document:
+                if document.needs_pass or not len(document) or (page is not None and not 0 <= page < len(document)):
+                    raise ValueError("原文不可用")
+            if not any(paper["id"] == identifier for paper in self.library.list_metadata()):
+                raise ValueError("论文已移出资料库")
+        except (OSError, RuntimeError, ValueError):
+            self.error("引用的原文或页码已不可用。")
+            return
+        self.show_reader()
+        if not self.paper or self.paper["id"] != identifier:
+            self.reload(identifier)
+        if page is not None and self.paper and self.paper["id"] == identifier:
+            if self.splitter.sizes()[1] == 0:
+                self.splitter.toggle(1)
+            self.view.show_citation(page, rects)
+
     def toggle_library(self):
+        if self.workspace_stack.currentIndex():
+            self.show_reader()
+            return
         if self.splitter.sizes()[0] == 0:
             self.splitter.previous_widths.setdefault(0, 220)
         self.splitter.toggle(0)
         self.sync_library_rail()
 
     def sync_library_rail(self, *_):
+        if self.workspace_stack.currentIndex():
+            return
         expanded = self.splitter.sizes()[0] > 0
         self.library_rail_button.set_active(expanded)
         self.library_rail_button.setToolTip("收起论文列表" if expanded else "展开论文列表")
@@ -1571,8 +1626,19 @@ class Window(QMainWindow):
         except Exception as exc: self.error(str(exc))
 
     def closeEvent(self, event):
+        if self.research_workspace and self.research_workspace.active:
+            self.research_workspace.stop_run()
+            self.statusBar().showMessage("正在保存研究检查点，请稍后退出。")
+            event.ignore()
+            return
         if self.busy:
             self.error("后台任务仍在运行，请等待结束后退出。"); event.ignore(); return
+        if self.research_workspace:
+            for limit in self.research_workspace.full_map_pending.values():
+                limit.stop.set()
+            self.research_workspace.clear_pdf()
+            if self.research_workspace.pdf_downloader is not None:
+                self.research_workspace.pdf_downloader.shutdown()
         self.save_notes(); self.position_timer.stop()
         self.view.clear_document()
         if self.doc: self.doc.close(); self.doc = None

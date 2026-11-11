@@ -4,8 +4,8 @@ root = Path(SPECPATH)
 a = Analysis([str(root / 'paperreader' / '__main__.py')], pathex=[str(root)],
     binaries=[], datas=[(str(root/'paperreader'/'assets'), 'paperreader/assets'),
                         (str(root/'paperreader'/'themes'), 'paperreader/themes')],
-    hiddenimports=['keyring', 'keyring.backends.macOS', 'fitz', 'httpx'],
-    excludes=['PySide6.QtWebEngineCore', 'PySide6.QtWebEngineWidgets', 'PySide6.QtWebEngineQuick', 'tkinter'],
+    hiddenimports=['keyring', 'keyring.backends.macOS', 'fitz', 'httpx', 'PySide6.QtWebEngineWidgets'],
+    excludes=['PySide6.QtWebEngineQuick', 'tkinter'],
     hookspath=[], hooksconfig={'matplotlib': {'backends': ['Agg']}}, runtime_hooks=[], noarchive=False)
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='PaperReader', debug=False,

@@ -7,3 +7,6 @@ keyring>=25,<26
 psutil>=6,<8
 matplotlib>=3.8,<4
 Pillow>=9.3,<13
+python-docx>=1.1,<2
+openpyxl>=3.1,<4
+xlrd>=2,<3
