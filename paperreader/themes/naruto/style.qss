@@ -20,3 +20,10 @@ QTabBar::tab:selected { background: #91492f; border-color: #b9704a; color: #fff0
 QWidget#SageCard { background: #29251b; border-bottom: 1px solid #51452f; }
 QLabel#SageTitle { color: #f2dfba; font-weight: 700; font-size: 21px; }
 QLabel#SageBadge { background: #4c492d; border: 1px solid #676044; border-radius: 8px; padding: 3px 8px; color: #f0e1bd; }
+
+QFrame#ScrollTextCard QLabel {
+    color: #342012;
+    background: transparent;
+    font-family: "Kaiti SC", "STKaiti", "KaiTi", "Songti SC", serif;
+}
+QFrame#ScrollTextCard QLabel#PanelTitle { color: #342012; }

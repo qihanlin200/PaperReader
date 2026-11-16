@@ -1,3 +1,5 @@
+from datetime import datetime
+import json
 from html import escape
 from pathlib import Path
 from threading import Event
@@ -5,15 +7,16 @@ import uuid
 from paperreader.services.lazy import fitz
 from paperreader.services.lazy import keyring
 from PySide6.QtCore import QObject, QPoint, QRunnable, QSize, QThreadPool, Signal, QSignalBlocker, QTimer, QUrl, QUrlQuery
-from PySide6.QtGui import QIcon, QPixmap, QTextCursor
+from PySide6.QtGui import QIcon, QImage, QPixmap, QShortcut, QTextCursor
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QListView, QListWidget, QSplitter, QScrollArea, QTextBrowser, QTextEdit, QLineEdit, QLabel,
     QFileDialog, QInputDialog, QMessageBox, QDialog, QDialogButtonBox, QTabWidget, QStackedWidget, QApplication, QComboBox, QMenu, QProgressDialog, QSpacerItem, QSizePolicy)
 from PySide6.QtCore import Qt
 from paperreader.services.library import Library
 from paperreader.services.network import complete, download
+from paperreader.ui.reading_home import ContentButton, ReadingHome
 from paperreader.ui.pdf import ContinuousPDF
-from paperreader.ui.markdown import MarkdownBrowser, MarkdownEditor, replace_citations
+from paperreader.ui.markdown import ChatBrowser, MarkdownBrowser, MarkdownEditor, replace_citations
 from paperreader.ui.outline import AnalysisOutline
 from paperreader.ui.paper_list import PaperList, PAPER_ID_ROLE, GROUP_ID_ROLE, MACOS
 from paperreader.ui.splitter import PaneSplitter
@@ -80,7 +83,6 @@ class Window(QMainWindow):
         saved_config = self.library.config()
         self.profile_config = normalize_profiles(saved_config)
         self.profile_config["theme"] = get_theme(saved_config.get("theme")).identifier
-        self.profile_config["pdf_follow_theme"] = saved_config.get("pdf_follow_theme", True) is not False
         apply_theme(self.profile_config["theme"])
         self.setWindowIcon(QApplication.instance().windowIcon())
         self.config = active_profile(self.profile_config)
@@ -112,12 +114,16 @@ class Window(QMainWindow):
 
         top = ThemeHeader(); self.top_bar = top
         bar = QHBoxLayout(top); bar.setContentsMargins(18, 8, 16, 8); bar.setSpacing(12)
-        brand = QWidget(); brand.setObjectName("BrandMark")
+        brand = ContentButton(); brand.setObjectName("BrandMark")
+        brand.setAccessibleName("返回阅读首页")
+        brand.clicked.connect(self.show_reading_home)
         brand_row = QHBoxLayout(brand); brand_row.setContentsMargins(0, 0, 0, 0); brand_row.setSpacing(7)
         self.brand_icon = QLabel(); self.brand_icon.setFixedSize(24, 24)
         brand_row.addWidget(self.brand_icon)
         brand_label = QLabel("PaperReader"); brand_label.setObjectName("BrandLabel")
         brand_row.addWidget(brand_label)
+        for child in (self.brand_icon, brand_label):
+            child.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         bar.addWidget(brand)
         bar.addStretch()
         layout.addWidget(top)
@@ -140,6 +146,9 @@ class Window(QMainWindow):
         self.work_rail = rail
         body_row.addWidget(rail)
         split = PaneSplitter(); self.splitter = split
+        self.reading_content = QStackedWidget()
+        self.reading_splitter = PaneSplitter()
+        self.reading_content.addWidget(self.reading_splitter)
         self.workspace_stack = QStackedWidget()
         self.workspace_stack.addWidget(split)
         body_row.addWidget(self.workspace_stack, 1)
@@ -197,17 +206,63 @@ class Window(QMainWindow):
         rl.addWidget(head)
         nav_widget = QWidget(); nav = QHBoxLayout(nav_widget); nav.setContentsMargins(10, 6, 10, 6); nav.setSpacing(5)
         nav.addWidget(button("‹", lambda: self.turn(-1), "NavButton"))
-        self.page_label = QLabel("— / —"); self.page_label.setObjectName("Muted"); nav.addWidget(self.page_label)
-        nav.addWidget(button("›", lambda: self.turn(1), "NavButton")); nav.addStretch()
+        page_counter = QWidget()
+        page_counter.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+        page_counter_layout = QHBoxLayout(page_counter)
+        page_counter_layout.setContentsMargins(0, 0, 0, 0)
+        page_counter_layout.setSpacing(4)
+        self.pdf_page_input = self.pdf_number_input("当前页码", 42, self.apply_pdf_page)
+        self.pdf_page_input.setPlaceholderText("—")
+        self.pdf_page_input.setEnabled(False)
+        page_counter_layout.addWidget(self.pdf_page_input)
+        self.page_label = QLabel("/ —")
+        self.page_label.setObjectName("Muted")
+        page_counter_layout.addWidget(self.page_label)
+        nav.addWidget(page_counter)
+        nav.addWidget(button("›", lambda: self.turn(1), "NavButton"))
+        self.pdf_nav = nav_widget
+        nav.addStretch()
+        self.pdf_layout_buttons = {}
+        for columns in (1, 2, 3):
+            control = button("", lambda checked=False, n=columns: self.set_pdf_columns(n), "PdfLayoutButton")
+            control.setToolTip(f"显示 {columns} 页")
+            control.setAccessibleName(f"显示 {columns} 页")
+            control.setIconSize(QSize(20, 20))
+            control.setCheckable(True)
+            control.hide()
+            nav.addWidget(control)
+            self.pdf_layout_buttons[columns] = control
+        self.pdf_fullscreen_button = button("", self.toggle_pdf_fullscreen, "NavButton")
+        self.pdf_fullscreen_button.setToolTip("PDF 全屏")
+        self.pdf_fullscreen_button.setAccessibleName("PDF 全屏")
+        self.pdf_fullscreen_button.setEnabled(False)
+        nav.insertWidget(3, self.pdf_fullscreen_button)
+        self.pdf_color_button = button(
+            "黑白色",
+            lambda: self.change_pdf_follow_theme(not self.view.follow_theme),
+            "NavButton",
+        )
+        self.pdf_color_button.setEnabled(False)
+        self.pdf_color_button.setToolTip("切换 PDF 背景配色")
+        nav.insertWidget(4, self.pdf_color_button)
         nav.addWidget(button("校准", self.fit_width, "NavButton"))
         nav.addWidget(button("−", lambda: self.zoom(.85), "NavButton"))
-        self.zoom_label = QLabel("130%"); self.zoom_label.setObjectName("Muted"); nav.addWidget(self.zoom_label)
+        self.zoom_label = self.pdf_number_input("缩放百分比", 70, self.apply_pdf_zoom)
+        self.zoom_label.setText("130%")
+        self.zoom_label.setEnabled(False)
+        nav.addWidget(self.zoom_label)
         nav.addWidget(button("＋", lambda: self.zoom(1.18), "NavButton")); rl.addWidget(nav_widget)
-        self.view = ContinuousPDF(); self.view.set_follow_theme(self.profile_config["pdf_follow_theme"])
+        self.view = ContinuousPDF()
         self.view.action.connect(self.pdf_action)
         self.view.pageChanged.connect(self.reading_page_changed)
         self.view.zoomChanged.connect(lambda scale: self.zoom_label.setText(f"{scale:.0%}"))
-        rl.addWidget(self.view, 1); split.addWidget(reader)
+        self.pdf_reader_layout = rl
+        self.pdf_fullscreen_state = None
+        rl.addWidget(self.view, 1)
+        self.reading_splitter.addWidget(reader)
+        self.pdf_escape = QShortcut("Escape", self)
+        self.pdf_escape.setEnabled(False)
+        self.pdf_escape.activated.connect(self.toggle_pdf_fullscreen)
 
         workspace = QWidget(); workspace.setObjectName("WorkspacePanel")
         wl = QVBoxLayout(workspace); wl.setContentsMargins(0, 0, 0, 0); wl.setSpacing(0)
@@ -222,17 +277,27 @@ class Window(QMainWindow):
         # Qt's popup margins can otherwise clip the last row in the compact control.
         rows_height = sum(mode_view.sizeHintForRow(i) for i in range(self.analysis_mode.count()))
         mode_view.setMinimumHeight(rows_height + 2 * mode_view.frameWidth())
-        self.analysis_mode.currentIndexChanged.connect(lambda _: self.refresh())
+        self.analysis_mode.currentIndexChanged.connect(lambda _: self.refresh_analysis())
         row.addWidget(self.analysis_mode)
         self.read_button = button("阅读", self.toggle_reading, "Quiet")
         self.read_button.setProperty("analysisAction", True)
         self.read_button.setFixedHeight(36)
         row.addWidget(self.read_button); wl.addWidget(head)
-        tabs = QTabWidget(); self.summary = MarkdownBrowser(reading_style=True, allow_followup=True);
-        self.summary.followUpRequested.connect(self.ask_about_analysis)
-        self.summary.anchorClicked.connect(self.continue_reading)
-        self.analysis_status = RequestStatus(); self.analysis_status.attach(self.summary)
-        tabs.addTab(self.summary, "AI 分析")
+        tabs = QTabWidget()
+        self.analysis_pages = QStackedWidget()
+        self.analysis_browsers = {}
+        self.analysis_status = RequestStatus()
+        for mode in ("quick", "deep"):
+            browser = MarkdownBrowser(reading_style=True, allow_followup=True)
+            browser.followUpRequested.connect(self.ask_about_analysis)
+            browser.anchorClicked.connect(self.continue_reading)
+            browser.anchorClicked.connect(self.analysis_status.link_clicked)
+            self.analysis_browsers[mode] = browser
+            self.analysis_pages.addWidget(browser)
+        self.summary = self.analysis_browsers["quick"]
+        self.analysis_status.setParent(self.analysis_pages)
+        self.analysis_status.browser = self.summary
+        tabs.addTab(self.analysis_pages, "AI 分析")
         self.outline_button = button("目录 ▾", self.show_analysis_outline, "Quiet")
         self.outline_button.setToolTip("查看当前 AI 分析的章节")
         tabs.setCornerWidget(self.outline_button, Qt.Corner.TopRightCorner)
@@ -249,7 +314,7 @@ class Window(QMainWindow):
             actions = QHBoxLayout()
             for name, fn in names: actions.addWidget(button(name, fn, "Danger" if name.startswith("删除") or name == "全部移除" else "Quiet"))
             ml.addLayout(actions)
-        tabs.addTab(marks_widget, "批注"); wl.addWidget(tabs, 1); split.addWidget(workspace)
+        tabs.addTab(marks_widget, "批注"); wl.addWidget(tabs, 1); self.reading_splitter.addWidget(workspace)
 
         chat = QWidget(); chat.setObjectName("ChatPanel")
         cl = QVBoxLayout(chat); cl.setContentsMargins(0, 0, 0, 0); cl.setSpacing(0)
@@ -278,7 +343,7 @@ class Window(QMainWindow):
         sage_details.addWidget(self.sage_badge, alignment=Qt.AlignmentFlag.AlignLeft)
         sage_row.addLayout(sage_details, 1)
         cl.addWidget(self.sage_card)
-        self.chat = MarkdownBrowser(); cl.addWidget(self.chat, 1)
+        self.chat = ChatBrowser(); cl.addWidget(self.chat, 1)
         self.chat_reflow_timer = QTimer(self.chat)
         self.chat_reflow_timer.setSingleShot(True)
         self.chat_reflow_timer.timeout.connect(self.reflow_chat_viewport)
@@ -306,7 +371,7 @@ class Window(QMainWindow):
         composer = QWidget(); form = QVBoxLayout(composer); form.setContentsMargins(0, 8, 0, 0); form.setSpacing(0)
         self.question = QuestionEdit()
         self.question.submitRequested.connect(self.ask)
-        self.question.setMaximumHeight(165); form.addWidget(self.question)
+        self.question.setFixedHeight(104); form.addWidget(self.question)
         self.model_selector = QComboBox(); self.model_selector.setMinimumWidth(0)
         self.model_selector.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.model_selector.setMinimumContentsLength(8)
@@ -317,9 +382,24 @@ class Window(QMainWindow):
         self.question.footer_layout.addWidget(self.model_selector, 1)
         self.send_button = button("发送 ↑", self.ask, "Primary")
         self.question.footer_layout.addWidget(self.send_button)
-        cl.addWidget(composer); split.addWidget(chat)
+        cl.addWidget(composer); self.reading_splitter.addWidget(chat)
+        self.reading_panes = (reader, workspace, chat)
+        self.reading_home = ReadingHome(self.import_file, self.reload)
+        self.recent_path = self.library.root / "recent-reading.json"
+        try:
+            saved = json.loads(self.recent_path.read_text(encoding="utf-8"))
+            self.recent_reading = saved if isinstance(saved, dict) else {}
+        except (OSError, ValueError):
+            self.recent_reading = {}
+        self.reading_content.addWidget(self.reading_home)
+        split.addWidget(self.reading_content)
+        split.setCollapsible(1, False)
+        split.setStretchFactor(0, 0)
+        split.setStretchFactor(1, 1)
         self.update_theme_art()
-        split.setSizes([220, 500, 335, 335])
+        self.update_reading_home()
+        split.setSizes([220, 1170])
+        self.reading_splitter.setSizes([500, 335, 335])
         self.sync_library_rail()
         status_label = QLabel("云端模型 API · 本地资料库"); status_label.setObjectName("Muted")
         self.statusBar().addPermanentWidget(status_label)
@@ -332,6 +412,27 @@ class Window(QMainWindow):
         self.chat.mathUpdated.connect(self.render_chat)
         self.reload()
         self.statusBar().showMessage("学习记录仅保存在本机；AI 操作会将必要文本发送到配置的模型 API。")
+
+    def update_reading_home(self):
+        at_home = self.paper is None
+        self.reading_content.setCurrentWidget(
+            self.reading_home if at_home else self.reading_splitter)
+        if at_home:
+            titles = {paper["id"]: paper["title"] for paper in getattr(self, "all_papers", [])}
+            recent = [(identifier, titles[identifier], stamp)
+                      for identifier, stamp in self.recent_reading.items()
+                      if identifier in titles and isinstance(stamp, str)]
+            recent.sort(key=lambda entry: entry[2], reverse=True)
+            self.reading_home.set_recent(recent[:3])
+
+    def show_reading_home(self):
+        if self.workspace_stack.currentWidget() is not self.splitter:
+            return
+        if self.paper:
+            self.close_current_paper()
+        with QSignalBlocker(self.list):
+            self.list.setCurrentRow(-1)
+        self.update_reading_home()
 
     def refresh_models(self):
         self.model_selector.blockSignals(True); self.model_selector.clear()
@@ -402,6 +503,7 @@ class Window(QMainWindow):
                 self.list.setCurrentRow(row)
         if reopen and row >= 0:
             self.list.setCurrentRow(row)
+        self.update_reading_home()
 
     def paper_at_row(self, row):
         item = self.list.item(row)
@@ -471,8 +573,8 @@ class Window(QMainWindow):
         if not self.paper or self.paper["id"] != identifier:
             self.reload(identifier)
         if page is not None and self.paper and self.paper["id"] == identifier:
-            if self.splitter.sizes()[1] == 0:
-                self.splitter.toggle(1)
+            if self.reading_splitter.sizes()[0] == 0:
+                self.reading_splitter.toggle(0)
             self.view.show_citation(page, rects)
 
     def toggle_library(self):
@@ -753,21 +855,29 @@ class Window(QMainWindow):
 
     def close_current_paper(self):
         self.save_notes(); self.timer.stop(); self.position_timer.stop(); self.persist()
+        if self.pdf_fullscreen_state is not None:
+            self.toggle_pdf_fullscreen()
+        self.pdf_fullscreen_button.setEnabled(False)
+        self.pdf_color_button.setEnabled(False)
         self.view.clear_document()
         if self.doc: self.doc.close()
         self.doc = None; self.paper = None
         self.passage_index = None
         self.analysis_status.set_context(None); self.chat_status.set_context(None)
         self.notes.blockSignals(True); self.notes.clear(); self.notes.blockSignals(False)
-        self.summary.set_markdown(""); self.chat.set_markdown("")
+        for browser in self.analysis_browsers.values():
+            browser.set_status_html("")
+            browser.set_markdown("")
+        self.chat.set_markdown("")
         self.marks.clear(); self.mark_preview.set_markdown(""); self.question.clear(); self.clear_quote()
         self.question_navigation.update_questions([])
-        self.set_reader_title(""); self.page_label.setText("— / —")
+        self.set_reader_title(""); self.update_pdf_page_counter()
+        self.update_reading_home()
 
     def clear_permanent_paper_caches(self):
         from paperreader.ui.math_render import render_formula
         render_formula.cache_clear()
-        for browser in (self.summary, self.chat, self.quote_label, self.mark_preview, self.notes.preview):
+        for browser in (*self.analysis_browsers.values(), self.chat, self.quote_label, self.mark_preview, self.notes.preview):
             browser.math_resources.clear(); browser.math_sources.clear()
 
     def remove_paper(self, paper):
@@ -860,16 +970,35 @@ class Window(QMainWindow):
         self.passage_index = None
         self.page = min(self.paper.get("page", 0), len(self.doc)-1)
         self.notes.blockSignals(True); self.notes.setPlainText(self.paper["notes"]); self.notes.blockSignals(False)
+        self.view.follow_theme = self.paper.get("pdf_follow_theme", True)
+        self.pdf_color_button.setText("黑白色" if self.view.follow_theme else "主题色")
+        self.pdf_color_button.setEnabled(True)
         self.view.load(self.doc, self.page)
+        self.pdf_fullscreen_button.setEnabled(True)
         self.clear_quote(); self.refresh()
+        self.recent_reading[self.paper["id"]] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            self.recent_path.write_text(json.dumps(self.recent_reading), encoding="utf-8")
+        except OSError:
+            pass
+        self.update_reading_home()
 
     def refresh(self):
         if not self.paper:
             self.analysis_status.set_context(None); self.chat_status.set_context(None)
             return
         self.view.set_marks(self.paper["marks"])
-        self.page_label.setText(f"{self.page+1} / {len(self.doc)}")
+        self.update_pdf_page_counter()
+        self.refresh_analysis()
+        self.render_chat()
+        self.marks.clear(); self.marks.addItems([f"P{m['page']+1} · {m['text'][:55]}\n{m['comment']}" for m in self.paper["marks"]])
+
+    def refresh_analysis(self):
+        if not self.paper:
+            return
         mode = self.analysis_mode.currentData()
+        self.summary = self.analysis_browsers[mode]
+        self.analysis_status.browser = self.summary
         self.analysis_status.set_context((self.paper['id'], mode))
         record = self.paper.get("analyses", {}).get(mode, {})
         saved = record.get("text")
@@ -879,18 +1008,55 @@ class Window(QMainWindow):
         footer = ""
         if not draft and record.get("stopped") and record.get("resume"):
             footer = '<hr><p align="left" style="-qt-block-indent:0;"><a href="paperreader-analysis:continue">继续阅读</a></p>'
-        self.summary.set_markdown(text, footer_html=footer)
-        self.render_chat()
-        self.marks.clear(); self.marks.addItems([f"P{m['page']+1} · {m['text'][:55]}\n{m['comment']}" for m in self.paper["marks"]])
+        self.summary.set_markdown(text, footer_html=footer, reuse=True)
+        self.analysis_pages.setCurrentWidget(self.summary)
 
     def show_analysis_outline(self):
         if self.paper:
             self.analysis_outline.show_for(self.outline_button, self.summary)
 
+    def pdf_number_input(self, name, width, apply):
+        field = QLineEdit()
+        field.setObjectName("PdfNumberInput")
+        field.setAccessibleName(name)
+        field.setToolTip(f"输入{name}，按回车应用")
+        field.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        field.setFixedWidth(width)
+        field.setMaxLength(12)
+        field.returnPressed.connect(apply)
+        return field
+
+    def update_pdf_page_counter(self):
+        total = len(self.doc) if self.paper and self.doc is not None else 0
+        self.pdf_page_input.setEnabled(bool(total))
+        self.zoom_label.setEnabled(bool(total))
+        self.pdf_page_input.setText(str(self.page + 1) if total else "")
+        self.page_label.setText(f"/ {total}" if total else "/ —")
+
+    def apply_pdf_page(self):
+        if self.doc is not None and len(self.doc):
+            try:
+                page = int(self.pdf_page_input.text())
+            except ValueError:
+                page = self.page + 1
+            self.view.jump(max(0, min(page - 1, len(self.doc) - 1)))
+        self.update_pdf_page_counter()
+        self.pdf_page_input.selectAll()
+
+    def apply_pdf_zoom(self):
+        try:
+            percent = float(self.zoom_label.text().strip().rstrip("%％"))
+        except ValueError:
+            percent = 0
+        if self.doc is not None and 0 < percent < float("inf"):
+            self.zoom(percent / 100 / self.view.scale)
+        self.zoom_label.setText(f"{self.view.scale:.0%}")
+        self.zoom_label.selectAll()
+
     def reading_page_changed(self, page):
         if not self.paper: return
         self.page = page; self.paper["page"] = page
-        self.page_label.setText(f"{page+1} / {len(self.doc)}")
+        self.update_pdf_page_counter()
         self.position_timer.start()
 
     def pdf_action(self, page, action, text, rects):
@@ -898,14 +1064,73 @@ class Window(QMainWindow):
         self.selection_action(action, text, rects, page=page)
 
     def turn(self, delta):
-        if self.doc: self.view.jump(self.page + delta)
+        if self.doc: self.view.jump(self.page + delta * self.view.columns)
 
     def zoom(self, factor):
         self.view.zoom(factor)
 
+    def toggle_pdf_fullscreen(self):
+        state = self.pdf_fullscreen_state
+        root_layout = self.centralWidget().layout()
+        if state is None:
+            if self.doc is None:
+                return
+            hidden = [root_layout.itemAt(i).widget() for i in range(root_layout.count())]
+            hidden = [widget for widget in hidden if widget and widget.isVisible()]
+            self.pdf_fullscreen_state = (self.windowState(), self.view.scale, hidden, self.statusBar().isVisible())
+            for widget in hidden:
+                widget.hide()
+            self.statusBar().hide()
+            root_layout.addWidget(self.pdf_nav)
+            self.pdf_nav.show()
+            for columns, control in self.pdf_layout_buttons.items():
+                control.setChecked(columns == 1)
+                control.show()
+            root_layout.addWidget(self.view, 1)
+            self.view.show()
+            self.showFullScreen()
+            self.pdf_fullscreen_button.setIcon(menu_symbol_icon("contract", size=18))
+            self.pdf_fullscreen_button.setToolTip("退出 PDF 全屏（Esc）")
+            self.pdf_fullscreen_button.setAccessibleName("退出 PDF 全屏")
+            self.pdf_escape.setEnabled(True)
+            QTimer.singleShot(0, self.fit_fullscreen_pdf)
+        else:
+            window_state, scale, hidden, status_visible = state
+            self.pdf_fullscreen_state = None
+            self.pdf_reader_layout.addWidget(self.pdf_nav)
+            self.pdf_nav.show()
+            for control in self.pdf_layout_buttons.values():
+                control.hide()
+            self.view.set_columns(1, self.page)
+            self.pdf_reader_layout.addWidget(self.view, 1)
+            for widget in hidden:
+                widget.show()
+            self.statusBar().setVisible(status_visible)
+            self.setWindowState(window_state)
+            self.view.zoom(scale / self.view.scale)
+            self.pdf_fullscreen_button.setIcon(menu_symbol_icon("expand", size=18))
+            self.pdf_fullscreen_button.setToolTip("PDF 全屏")
+            self.pdf_fullscreen_button.setAccessibleName("PDF 全屏")
+            self.pdf_escape.setEnabled(False)
+
+    def fit_fullscreen_pdf(self):
+        if self.pdf_fullscreen_state is not None:
+            self.fit_width()
+
+    def set_pdf_columns(self, columns):
+        self.view.set_columns(columns, self.page)
+        for number, control in self.pdf_layout_buttons.items():
+            control.setChecked(number == columns)
+        self.fit_width()
+
     def fit_width(self):
         if self.doc:
-            target = max(.5, min(4, (self.view.viewport().width()-28)/self.doc[self.page].rect.width))
+            columns = self.view.columns
+            start = self.page - self.page % columns
+            widths = [self.view.pages[i].base_size[0]
+                      for i in range(start, min(start + columns, len(self.view.pages)))]
+            available = self.view.viewport().width() - 28 - 16 * (len(widths) - 1)
+            target = max(.5 / columns, min(4, available / sum(widths)))
             self.view.zoom(target/self.view.scale)
 
     def save_notes(self):
@@ -1015,23 +1240,23 @@ class Window(QMainWindow):
         self.centralWidget().update()
         self.update_theme_art()
         self.view.refresh_theme()
+        self.update_chat_avatar()
         for browser in self.findChildren(MarkdownBrowser):
             browser.refresh_theme()
-        self.analysis_status.render_inline()
-        self.render_chat()
         return True
 
     def change_pdf_follow_theme(self, enabled):
+        if self.paper is None:
+            return False
         enabled = bool(enabled)
-        if enabled == self.profile_config["pdf_follow_theme"]:
-            return True
         try:
-            self.library.save_config(dict(self.library.config(), pdf_follow_theme=enabled))
+            self.library.save(dict(self.paper, pdf_follow_theme=enabled))
         except Exception as exc:
             self.error("论文背景设置保存失败：" + str(exc))
             return False
-        self.profile_config["pdf_follow_theme"] = enabled
+        self.paper["pdf_follow_theme"] = enabled
         self.view.set_follow_theme(enabled)
+        self.pdf_color_button.setText("黑白色" if enabled else "主题色")
         return True
 
     @property
@@ -1039,20 +1264,32 @@ class Window(QMainWindow):
         return assistant_name(self.profile_config["theme"])
 
     def update_theme_art(self):
+        for columns, control in self.pdf_layout_buttons.items():
+            control.setIcon(menu_symbol_icon(f"pages-{columns}", size=20))
+        self.pdf_fullscreen_button.setIcon(menu_symbol_icon(
+            "contract" if self.pdf_fullscreen_state else "expand", size=18))
         pack = get_theme(self.profile_config["theme"])
-        self.sage_card.setVisible(bool(pack.avatar or pack.tagline))
+        self.list.refresh_paper_icons(pack.identifier)
+        if self.research_workspace is not None:
+            self.research_workspace.refresh_space_icons()
+            self.research_workspace.refresh_sources()
+        self.work_rail.update()
+        self.reading_home.set_theme(pack.identifier)
+        self.update_reading_home()
+        avatar = pack.avatar if pack.identifier != "dark" else None
+        self.sage_card.setVisible(bool(avatar or pack.tagline))
         self.sage_title.setText(pack.assistant_name)
         self.sage_badge.setText(pack.tagline)
         self.sage_badge.setVisible(bool(pack.tagline))
-        self.sage_avatar.setVisible(bool(pack.avatar))
-        self.sage_avatar.setPixmap(QIcon(str(pack.avatar)).pixmap(QSize(76, 76)) if pack.avatar else QPixmap())
+        self.sage_avatar.setVisible(bool(avatar))
+        self.sage_avatar.setPixmap(QIcon(str(avatar)).pixmap(QSize(76, 76)) if avatar else QPixmap())
         self.top_bar.setFixedHeight(pack.header_height)
-        self.top_bar.set_animation(pack.header_animation)
+        self.top_bar.set_animation(pack.header_animation, pack.banner_animation)
         self.top_bar.layout().setAlignment(Qt.AlignmentFlag.AlignTop if pack.banner else Qt.AlignmentFlag(0))
         self.top_bar.update()
         inset = pack.panel_inset
-        for index in range(1, self.splitter.count()):
-            self.splitter.widget(index).layout().setContentsMargins(inset, inset, inset, inset)
+        for pane in self.reading_panes:
+            pane.layout().setContentsMargins(inset, inset, inset, inset)
         default_mark = Path(__file__).resolve().parent.parent / "assets" / "brand-diamond.svg"
         self.brand_icon.setPixmap(QIcon(str(pack.brand_icon or default_mark)).pixmap(QSize(24, 24)))
         self.question.setPlaceholderText(pack.question_placeholder)
@@ -1373,6 +1610,10 @@ class Window(QMainWindow):
             return
         self.chat_status.toggle_context((self.paper['id'], self.paper['active_session'], index))
 
+    def update_chat_avatar(self):
+        avatar = get_theme(self.profile_config["theme"]).avatar
+        self.chat.math_resources["paperreader-chat-avatar:current"] = QImage(str(avatar)) if avatar else QImage()
+
     def render_chat(self, *, follow_latest=False):
         if not self.paper:
             self.chat_status.set_context(None)
@@ -1391,26 +1632,37 @@ class Window(QMainWindow):
         # Render messages independently so an unfinished code fence cannot swallow later messages.
         html = []
         self.chat.math_resources.clear(); self.chat.math_sources.clear()
+        self.update_chat_avatar()
         question_index = 0
         for message_index, message in enumerate(entries):
             role, content = message["role"], message["content"]
             anchor = ""
             status = ""
+            details = ""
             note_action = ""
             if role == "user":
                 anchor = f'<a name="question-{question_index}"></a>'; question_index += 1
-                status = self.chat_status.html_for(
-                    (self.paper['id'], session['id'], message_index),
-                    f'paperreader-status:toggle?message={message_index}',
+            elif message_index and entries[message_index - 1]["role"] == "user":
+                question_message = message_index - 1
+                status, details = self.chat_status.html_for(
+                    (self.paper['id'], session['id'], question_message),
+                    f'paperreader-status:toggle?message={question_message}', footer=True,
                 )
-            elif (
+            if (
                 role == "assistant" and 0 < message_index < len(session["messages"])
                 and entries[message_index - 1]["role"] == "user"
             ):
                 href = escape(self.answer_note_url(session['id'], message_index).toString(), quote=True)
-                note_action = (
-                    '<p align="right" style="text-indent:0; -qt-block-indent:0;">'
-                    f'<a class="chat-note-action" href="{href}">＋ 添加到笔记</a></p>'
+                note_action = f'<a class="chat-note-action" href="{href}">🔖︎&nbsp;添加到笔记</a>'
+            footer = ""
+            if status or note_action:
+                separator = '<td class="chat-gutter" width="12" align="center">│</td>' if status and note_action else ""
+                footer = (
+                    '<table width="100%" border="0" cellspacing="0" cellpadding="0" '
+                    'style="margin-top:8px; font-size:12px;"><tr>'
+                    f'<td class="chat-gutter" align="left">{status}</td>{separator}'
+                    f'<td class="chat-gutter" align="right">{note_action}</td>'
+                    f'</tr></table>{details}'
                 )
             if role == "assistant" and message.get("citations"):
                 links = {
@@ -1420,17 +1672,26 @@ class Window(QMainWindow):
                 }
                 content = replace_citations(content, links)
             body = self.chat.html_fragment(content)
-            label = escape(self.message_speaker(message))
-            style = "chat-question" if role == "user" else "chat-answer"
-            html.append(
-                f'<div class="{style}"><p class="chat-speaker" align="left" '
-                f'style="margin:16px 0 10px 0; text-indent:0; -qt-block-indent:0; font-size:14px; font-weight:600;">'
-                f'{anchor}{label}</p>{body}</div>{status}{note_action}'
-            )
+            if role == "user":
+                body = body.replace("<p>", '<p style="line-height:110%; margin-top:0; margin-bottom:0;">')
+                compact = "\n" not in content and self.chat.fontMetrics().horizontalAdvance(content) + 24 < self.chat.viewport().width() * .82
+                width = "" if compact else ' width="82%"'
+                html.append(
+                    f'<table align="right"{width} border="0" cellspacing="0" cellpadding="9">'
+                    f'<tr><td class="chat-question" valign="middle">{anchor}{body}</td></tr></table>'
+                )
+            else:
+                html.append(
+                    '<table align="left" width="98%" border="0" cellspacing="0" cellpadding="0">'
+                    '<tr><td class="chat-gutter" width="36" valign="top"><img src="paperreader-chat-avatar:current" '
+                    f'width="28" height="28" alt="{escape(self.message_speaker(message), quote=True)}"></td><td class="chat-gutter">'
+                    '<table width="100%" border="0" cellspacing="0" cellpadding="9">'
+                    f'<tr><td class="chat-answer">{body}{footer}</td></tr></table></td></tr></table>'
+                )
         scrollbar = self.chat.verticalScrollBar()
         position = scrollbar.value()
         following = follow_latest or position == scrollbar.maximum()
-        self.chat.setHtml("<hr>".join(html) if html else "<h3>从一个问题开始</h3><p>围绕论文概要继续提问，或双击原文选词后右键追问。</p>")
+        self.chat.setHtml('<p style="margin:0; font-size:8px;">&nbsp;</p>'.join(html) if html else "<h3>从一个问题开始</h3><p>围绕论文概要继续提问，或双击原文选词后右键追问。</p>")
         # Resolve the new document geometry before restoring the scroll position.
         self.chat.document().documentLayout().documentSize()
         if following:
@@ -1486,8 +1747,8 @@ class Window(QMainWindow):
             return
         source = sources.get(query.queryItemValue("source"))
         if source and 0 <= source["page"] < len(self.doc):
-            if self.splitter.sizes()[1] == 0:
-                self.splitter.toggle(1)
+            if self.reading_splitter.sizes()[0] == 0:
+                self.reading_splitter.toggle(0)
             self.view.show_citation(source["page"], source["rects"])
 
     def add_answer_to_notes(self, url):

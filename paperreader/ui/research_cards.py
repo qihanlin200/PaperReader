@@ -33,7 +33,9 @@ def card(label, body, *, meta="", actions="", accent=False, icon=""):
 
 def position(source):
     if source["kind"] == "academic":
-        return "学术元数据"
+        return "学术 · " + source.get("level", "题录")
+    if source["kind"] == "web":
+        return "网页 · " + source.get("level", "搜索摘要")
     if source["kind"] == "paper":
         return f"PDF · 第 {source['page'] + 1} 页"
     return f"文本 · 第 {source['line']} 行"

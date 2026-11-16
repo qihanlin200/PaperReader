@@ -63,7 +63,7 @@ def markdown_html(text, resources, sources, width=600, renderer=render_formula):
         replacements[token] = (f'<img src="{url}" width="{natural_w*ratio:.0f}" '
                                f'height="{natural_h*ratio:.0f}" alt="{html.escape(source, quote=True)}" />')
         return ('\n\n'+token+'\n\n') if match.group(2) is not None or match.group(4) is not None else token
-    protected = TOKENS.sub(convert, text)
+    protected = TOKENS.sub(convert, text) if renderer is not None else text
     # Qt's Markdown parser leaves **【label】** as literal text when CJK text
     # immediately follows it. Substitute only outside code and math spans.
     labels = {}

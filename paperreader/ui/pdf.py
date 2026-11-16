@@ -208,31 +208,27 @@ class PageView(QLabel):
         return "\n".join(lines), [list(w[:4]) for w in selected]
 
     def contextMenuEvent(self, event):
+        self.show_context_menu(event.pos(), event.globalPos())
+        event.accept()
+
+    def show_context_menu(self, position, global_position):
         text, rects = self.selected()
         menu = QMenu(self)
         menu.setObjectName("PdfSelectionMenu")
         hit_rects = rects
         if not hit_rects and self.page is not None:
-            point = fitz.Point(event.pos().x()/self.scale, event.pos().y()/self.scale) * self.page.derotation_matrix
+            point = fitz.Point(position.x()/self.scale, position.y()/self.scale) * self.page.derotation_matrix
             hit_rects = [r for mark in self.marks for r in mark["rects"] if fitz.Rect(r).contains(point)]
         overlapping = [mark for mark in self.marks if any(fitz.Rect(a).intersects(fitz.Rect(b)) for a in hit_rects for b in mark["rects"])]
-        if text:
-            for name in ["复制", "翻译所选内容", "针对所选内容提问"]:
-                menu.addAction(name)
-            menu.addSeparator()
-            menu.addAction("高亮")
-            menu.addAction("添加批注")
-        has_highlight = any(m.get("highlight", True) for m in overlapping)
-        has_comment = any(m.get("comment") for m in overlapping)
-        if text and (has_highlight or has_comment):
-            menu.addSeparator()
-        if has_highlight: menu.addAction("取消高亮")
-        if has_comment: menu.addAction("删除批注")
-        if not text and not overlapping:
-            hint = menu.addAction("请先选择文字，或在已有高亮/批注上右键")
-            hint.setEnabled(False)
+        for index, name in enumerate(("复制", "翻译所选内容", "针对所选内容提问", "高亮", "添加批注")):
+            if index == 3:
+                menu.addSeparator()
+            menu.addAction(name).setEnabled(bool(text))
+        menu.addSeparator()
+        menu.addAction("取消高亮").setEnabled(any(mark.get("highlight", True) for mark in overlapping))
+        menu.addAction("删除批注").setEnabled(any(mark.get("comment") for mark in overlapping))
         rects = hit_rects
-        chosen = menu.exec(event.globalPos())
+        chosen = menu.exec(global_position)
         if chosen:
             self.action.emit(chosen.text(), text, rects)
 
@@ -263,13 +259,19 @@ class PageView(QLabel):
 from bisect import bisect_right
 from math import ceil
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QScrollArea, QWidget, QVBoxLayout
+from PySide6.QtWidgets import QScrollArea, QWidget, QVBoxLayout, QHBoxLayout
 
 
 class ContinuousPDF(QScrollArea):
     action = Signal(int, str, str, list)
     pageChanged = Signal(int)
     zoomChanged = Signal(float)
+
+    def contextMenuEvent(self, event):
+        if self.pages:
+            page = self.pages[max(0, self.current)]
+            page.show_context_menu(page.mapFromGlobal(event.globalPos()), event.globalPos())
+            event.accept()
 
     def __init__(self):
         super().__init__()
@@ -278,6 +280,7 @@ class ContinuousPDF(QScrollArea):
         self.verticalScrollBar().setSingleStep(45)
         self.doc = None
         self.scale = 1.3
+        self.columns = 1
         self.follow_theme = True
         self.pages = []
         self.offsets = []
@@ -319,7 +322,7 @@ class ContinuousPDF(QScrollArea):
         self.citation_page = None
         container = QWidget(); container.installEventFilter(self); layout = QVBoxLayout(container)
         layout.setContentsMargins(12, 12, 12, 12); layout.setSpacing(16)
-        y = 12
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         for index in range(len(doc)):
             view = PageView(); view.scale = self.scale
             view.installEventFilter(self)
@@ -329,15 +332,47 @@ class ContinuousPDF(QScrollArea):
             view.setStyleSheet('background: white; color: #666;')
             view.setText(f'第 {index+1} 页 · 加载中…')
             view.action.connect(lambda action, text, rects, i=index: self.action.emit(i, action, text, rects))
-            layout.addWidget(view, alignment=Qt.AlignmentFlag.AlignHCenter)
-            self.pages.append(view); self.offsets.append(y)
-            y += view.height() + 16
-        layout.addStretch()
+            self.pages.append(view)
         self.setWidget(container)
-        container.setMinimumHeight(y)
-        layout.activate()
+        self.layout_pages()
         self.jump(page)
         self.scrolled()
+
+    def layout_pages(self):
+        container = self.widget()
+        layout = container.layout()
+        while layout.count():
+            row = layout.takeAt(0).layout()
+            while row.count():
+                row.takeAt(0)
+        for start in range(0, len(self.pages), self.columns):
+            row = QHBoxLayout()
+            row.setSpacing(16)
+            row.addStretch()
+            for page in self.pages[start:start + self.columns]:
+                row.addWidget(page, alignment=Qt.AlignmentFlag.AlignTop)
+            row.addStretch()
+            layout.addLayout(row)
+        self.update_page_offsets()
+
+    def update_page_offsets(self):
+        y = 12
+        self.offsets = []
+        for start in range(0, len(self.pages), self.columns):
+            row = self.pages[start:start + self.columns]
+            self.offsets.extend([y] * len(row))
+            y += max(page.height() for page in row) + 16
+        self.widget().setMinimumHeight(y - 4)
+        self.widget().layout().activate()
+
+    def set_columns(self, columns, page):
+        if self.columns == columns:
+            return
+        self.columns = columns
+        self.resizing_pages = True
+        self.layout_pages()
+        self.resizing_pages = False
+        self.jump(page)
 
     def jump(self, page):
         if not self.pages: return
@@ -375,6 +410,7 @@ class ContinuousPDF(QScrollArea):
         if not self.pages or self.resizing_pages: return
         top = self.verticalScrollBar().value()
         index = max(0, min(len(self.pages)-1, bisect_right(self.offsets, top+40)-1))
+        index -= index % self.columns
         if index != self.current:
             self.current = index; self.pageChanged.emit(index)
         end = min(len(self.pages)-1, bisect_right(self.offsets, top+self.viewport().height()))
@@ -528,12 +564,15 @@ class ContinuousPDF(QScrollArea):
 
     def zoom(self, factor, anchor=None):
         if self.doc is None: return
-        new_scale = max(.5, min(4, self.scale*factor))
+        new_scale = max(.5 / self.columns, min(4, self.scale*factor))
         if abs(new_scale-self.scale) < .0001: return
         if anchor is None: anchor = self.viewport().rect().center()
         # Keep the PDF point under the gesture centre stationary in both axes.
         content_point = self.widget().mapFrom(self.viewport(), anchor)
         index = max(0, min(len(self.pages)-1, bisect_right(self.offsets, content_point.y())-1))
+        first = index - index % self.columns
+        index = min(range(first, min(first + self.columns, len(self.pages))),
+                    key=lambda i: abs(self.pages[i].geometry().center().x() - content_point.x()))
         view = self.pages[index]
         fraction_y = (content_point.y()-self.offsets[index]) / max(1, view.height())
         fraction_x = (content_point.x()-view.x()) / max(1, view.width())
@@ -544,10 +583,7 @@ class ContinuousPDF(QScrollArea):
         ratio = new_scale/self.scale
         self.scale = new_scale
         self.zoomChanged.emit(new_scale)
-        y = 12
-        self.offsets = []
-        for page_index, page_view in enumerate(self.pages):
-            self.offsets.append(y)
+        for page_view in self.pages:
             page_view.scale = new_scale
             width, height = page_view.base_size
             page_view.setFixedSize(ceil(width*new_scale), ceil(height*new_scale))
@@ -555,9 +591,7 @@ class ContinuousPDF(QScrollArea):
             if page_view.anchor is not None: page_view.anchor = page_view.anchor*ratio
             if page_view.endpoint is not None: page_view.endpoint = page_view.endpoint*ratio
             page_view.update()
-            y += page_view.height()+16
-        self.widget().setMinimumHeight(y)
-        self.widget().layout().activate()
+        self.update_page_offsets()
         view = self.pages[index]
         self.verticalScrollBar().setValue(self.offsets[index] + int(fraction_y*view.height()) - anchor.y())
         self.horizontalScrollBar().setValue(view.x() + int(fraction_x*view.width()) - anchor.x())

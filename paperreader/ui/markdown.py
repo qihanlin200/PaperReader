@@ -1,8 +1,8 @@
 """Markdown display for untrusted model output, without HTML or image loading."""
 import time
-from PySide6.QtCore import Signal, Qt, QObject, QSignalBlocker, QTimer
+from PySide6.QtCore import Signal, Qt, QObject, QSignalBlocker, QTimer, QRectF
 from concurrent.futures import ThreadPoolExecutor
-from PySide6.QtGui import QTextDocument, QTextCursor, QTextBlockFormat, QTextCharFormat, QTextFormat, QTextTable, QColor, QBrush
+from PySide6.QtGui import QTextDocument, QTextCursor, QTextBlockFormat, QTextCharFormat, QTextFormat, QTextTable, QColor, QBrush, QPainter, QPainterPath
 from PySide6.QtWidgets import QTextBrowser
 from paperreader.services.themes import get_theme
 from paperreader.services.retrieval import CITATION
@@ -71,6 +71,15 @@ class MarkdownBrowser(QTextBrowser):
         self.setOpenLinks(False)
 
     def setHtml(self, text):
+        document = self.document()
+        layout_enabled = document.isLayoutEnabled()
+        document.setLayoutEnabled(False)
+        try:
+            self._replace_html(text)
+        finally:
+            document.setLayoutEnabled(layout_enabled)
+
+    def _replace_html(self, text):
         self._body_html = text
         super().setHtml(self._status_html + text)
         if not self.normalize_tables:
@@ -79,6 +88,9 @@ class MarkdownBrowser(QTextBrowser):
         def visit(frame):
             for child in frame.childFrames():
                 if isinstance(child, QTextTable):
+                    if child.rows() == 1 and child.format().border() == 0:
+                        visit(child)
+                        continue
                     fmt = child.format()
                     fmt.setAlignment(Qt.AlignmentFlag.AlignLeft)
                     fmt.setLeftMargin(0); fmt.setRightMargin(0)
@@ -102,12 +114,19 @@ class MarkdownBrowser(QTextBrowser):
                 visit(child)
         visit(self.document().rootFrame())
 
-    def refresh_theme(self):
+    def refresh_theme(self, old_html=None, new_html=None):
         position = self.verticalScrollBar().value()
         self.document().setDefaultStyleSheet(document_stylesheet())
-        self.setHtml(self._body_html)
-        if self.reading_style:
-            self.format_reading_text()
+        document = self.document()
+        layout_enabled = document.isLayoutEnabled()
+        document.setLayoutEnabled(False)
+        try:
+            body = self._body_html if old_html is None else self._body_html.replace(old_html, new_html)
+            self._replace_html(body)
+            if self.reading_style:
+                self.format_reading_text()
+        finally:
+            document.setLayoutEnabled(layout_enabled)
         self.verticalScrollBar().setValue(position)
 
     def wheelEvent(self, event):
@@ -169,16 +188,25 @@ class MarkdownBrowser(QTextBrowser):
         # Only internally rendered math images; never external or local-file images.
         return self.math_resources.get(name.toString()) if name is not None else None
 
-    def set_markdown(self, text, *, footer_html=""):
+    def set_markdown(self, text, *, footer_html="", reuse=False):
+        if reuse and (text, footer_html) == (self._markdown_text, self._markdown_footer):
+            return
         self._markdown_text = text
         self._markdown_footer = footer_html
         scrollbar = self.verticalScrollBar()
         previous = scrollbar.value()
         following = previous == scrollbar.maximum()
-        self.math_resources.clear(); self.math_sources.clear()
-        self.setHtml(self.html_fragment(text) + footer_html)
-        if self.reading_style:
-            self.format_reading_text()
+        document = self.document()
+        layout_enabled = document.isLayoutEnabled()
+        document.setLayoutEnabled(False)
+        try:
+            self.math_resources.clear()
+            self.math_sources.clear()
+            self._replace_html(self.html_fragment(text) + footer_html)
+            if self.reading_style:
+                self.format_reading_text()
+        finally:
+            document.setLayoutEnabled(layout_enabled)
         scrollbar.setValue(scrollbar.maximum() if following else previous)
         self.headingsChanged.emit()
 
@@ -252,6 +280,44 @@ class MarkdownBrowser(QTextBrowser):
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QTabWidget, QTextEdit
+
+
+class ChatBrowser(MarkdownBrowser):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("PaperChat")
+        self.document().setDocumentMargin(5)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        document = self.document()
+        layout = document.documentLayout()
+        painter = QPainter(self.viewport())
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setClipRegion(event.region())
+
+        for frame in document.rootFrame().childFrames():
+            if not isinstance(frame, QTextTable) or frame.rows() != 1:
+                continue
+            bubble = frame
+            if frame.columns() == 2:
+                bubble = next((child for child in frame.childFrames() if isinstance(child, QTextTable)), None)
+            if bubble is None or bubble.columns() != 1:
+                continue
+            bounds = QRectF(layout.frameBoundingRect(bubble))
+            # Qt reports the table origin at the padded content corner.
+            cell_format = bubble.cellAt(0, 0).format().toTableCellFormat()
+            bounds.translate(
+                -cell_format.leftPadding() - self.horizontalScrollBar().value(),
+                -cell_format.topPadding() - self.verticalScrollBar().value(),
+            )
+            if not bounds.intersects(QRectF(event.rect())):
+                continue
+            rectangle = QPainterPath()
+            rectangle.addRect(bounds)
+            rounded = QPainterPath()
+            rounded.addRoundedRect(bounds, 9, 9)
+            painter.fillPath(rectangle.subtracted(rounded), self.viewport().palette().base())
 
 
 class MarkdownEditor(QWidget):

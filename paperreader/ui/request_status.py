@@ -99,10 +99,10 @@ class RequestStatus(QWidget):
             html = self.html_for(self.context)
             self.browser.set_status_html(html + '<hr>' if html else '')
 
-    def html_for(self, context, href='paperreader-status:toggle'):
+    def html_for(self, context, href='paperreader-status:toggle', *, footer=False):
         record = self.records.get(context)
         if record is None:
-            return ''
+            return ('', '') if footer else ''
         arrow = '▾' if record['expanded'] else '▸'
         title = escape(record['title'])
         alignment = 'text-indent:0; -qt-block-indent:0;'
@@ -111,9 +111,13 @@ class RequestStatus(QWidget):
             lines = '<br>'.join(escape(line) for line in record['log'].splitlines())
             details = (f'<p align="left" style="color:{theme_color("#91aabd")}; '
                        f'font-size:12px; margin:4px 0 10px 0; {alignment}">{lines}</p>')
-        return (
-            f'<p align="left" style="margin:4px 0 6px 0; {alignment}"><a href="{escape(href, quote=True)}" '
-            f'style="color:{theme_color("#66ddda")}; text-decoration:none;">{arrow} {title}</a></p>' + details)
+        if footer:
+            title = escape(' · '.join(record['title'].split(' · ')[2:]) or record['title'])
+        link = (f'<a href="{escape(href, quote=True)}" '
+                f'style="color:{theme_color("#66ddda")}; text-decoration:none;">{arrow} {title}</a>')
+        if footer:
+            return link, details
+        return f'<p align="left" style="margin:4px 0 6px 0; {alignment}">{link}</p>' + details
 
     def expand(self, expanded):
         self.log.setVisible(expanded)

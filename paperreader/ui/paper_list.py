@@ -6,13 +6,18 @@ from pathlib import Path
 from PySide6.QtCore import QItemSelectionModel, QMimeData, QPoint, QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QCursor, QDrag, QIcon, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
-    QApplication, QHBoxLayout, QListWidget, QListWidgetItem, QStyle, QStyledItemDelegate,
+    QApplication, QHBoxLayout, QListWidget, QListWidgetItem, QStyle,
     QStyleOptionViewItem, QToolButton, QWidget,
 )
 
 
+from paperreader.ui.row_hover import RowHoverDelegate
+from paperreader.ui.work_rail import menu_symbol_icon
+
+
 _STAR_SIZE = QSize(30, 26)
 _STAR_MARGIN = 4
+
 PAPER_ID_ROLE = Qt.ItemDataRole.UserRole
 GROUP_ID_ROLE = Qt.ItemDataRole.UserRole + 1
 PAPER_MIME = 'application/x-paperreader-paper-ids'
@@ -20,7 +25,7 @@ GROUP_MIME = 'application/x-paperreader-group-id'
 MACOS = sys.platform == 'darwin'
 
 
-class PaperRowDelegate(QStyledItemDelegate):
+class PaperRowDelegate(RowHoverDelegate):
     def sizeHint(self, option, index):
         size = super().sizeHint(option, index)
         size.setWidth(self.parent().viewport().width())
@@ -44,10 +49,12 @@ class PaperRowDelegate(QStyledItemDelegate):
                     painter.drawRoundedRect(row.rect.adjusted(1, 1, -2, -2), 5, 5)
                 painter.restore()
             return
+        row.state &= ~QStyle.StateFlag.State_MouseOver
         text_rect = style.subElementRect(QStyle.SubElement.SE_ItemViewItemText, row, view)
         title_width = max(0, text_rect.width() - _STAR_SIZE.width() - 2 * _STAR_MARGIN)
         row.text = row.fontMetrics.elidedText(row.text, Qt.TextElideMode.ElideRight, title_width)
         style.drawControl(QStyle.ControlElement.CE_ItemViewItem, row, painter, view)
+        self.paint_highlight(painter, row, index)
 
 
 class PaperList(QListWidget):
@@ -59,6 +66,7 @@ class PaperList(QListWidget):
         super().__init__()
         assets = Path(__file__).resolve().parent.parent / "assets"
         self.document_icon = QIcon(str(assets / "paper-file.svg"))
+        self.paper_icon = self.document_icon
         self.favorite_icon = QIcon(str(assets / "favorite-star.svg"))
         self.outline_icon = QIcon(str(assets / "favorite-outline.svg"))
         self.setObjectName("PaperList")
@@ -335,8 +343,16 @@ class PaperList(QListWidget):
         if group_id != -1:
             self._visible_group_ids.add(group_id)
 
+    def refresh_paper_icons(self, theme):
+        icon = menu_symbol_icon("paper") if theme == "naruto" else self.document_icon
+        self.paper_icon = icon
+        for row in range(self.count()):
+            item = self.item(row)
+            if item.data(PAPER_ID_ROLE):
+                item.setIcon(icon)
+
     def add_paper(self, title, favorite, identifier=None):
-        item = QListWidgetItem(self.document_icon, " ".join(title.split()))
+        item = QListWidgetItem(self.paper_icon, " ".join(title.split()))
         item.setData(PAPER_ID_ROLE, identifier)
         item.setToolTip(title)
         self.addItem(item)

@@ -57,12 +57,19 @@ def client_options(url):
 async def cancellable_stream(url, headers, payload, consume, cancel):
     async def read():
         async with httpx.AsyncClient(**client_options(url)) as client:
-            async with client.stream("POST", url, headers=headers, json=payload) as response:
-                if response.is_error:
-                    raise ValueError(api_error_message(response.status_code))
-                async for line in response.aiter_lines():
-                    if consume(line):
-                        break
+            request_payload = payload
+            while True:
+                async with client.stream("POST", url, headers=headers, json=request_payload) as response:
+                    if response.status_code in (400, 422) and "stream_options" in request_payload:
+                        request_payload = {key: value for key, value in request_payload.items()
+                                           if key != "stream_options"}
+                        continue
+                    if response.is_error:
+                        raise ValueError(api_error_message(response.status_code))
+                    async for line in response.aiter_lines():
+                        if consume(line):
+                            break
+                    return
 
     async def wait_for_stop():
         while not cancel.is_set():
@@ -83,7 +90,7 @@ async def cancellable_stream(url, headers, payload, consume, cancel):
         await asyncio.gather(request, stopping, return_exceptions=True)
 
 
-def complete(config, key, messages, on_chunk=None, *, cancel=None):
+def complete(config, key, messages, on_chunk=None, *, cancel=None, on_usage=None):
     if message_length(messages) > input_limit(config):
         raise ValueError("请求文本超过此模型的最大输入长度，请调高上限或缩短问题/选区。")
     endpoint = config["endpoint"].strip().rstrip("/")
@@ -97,6 +104,8 @@ def complete(config, key, messages, on_chunk=None, *, cancel=None):
     url = endpoint + "/chat/completions"
     if on_chunk is not None:
         payload["stream"] = True
+        if on_usage is not None:
+            payload["stream_options"] = {"include_usage": True}
         headers["Accept"] = "text/event-stream"
         pieces = []
         finished = False
@@ -114,6 +123,8 @@ def complete(config, key, messages, on_chunk=None, *, cancel=None):
             event = json.loads(data)
             if "error" in event:
                 raise ValueError("模型流返回错误，请检查服务状态后重试。")
+            if on_usage is not None and isinstance(event.get("usage"), dict):
+                on_usage(event["usage"])
             for choice in event.get("choices", []):
                 if choice.get("index", 0) != 0:
                     continue
@@ -145,7 +156,10 @@ def complete(config, key, messages, on_chunk=None, *, cancel=None):
             response = client.post(url, headers=headers, json=payload)
             if response.is_error:
                 raise ValueError(api_error_message(response.status_code))
-            text = response.json()["choices"][0]["message"]["content"]
+            result = response.json()
+            if on_usage is not None and isinstance(result.get("usage"), dict):
+                on_usage(result["usage"])
+            text = result["choices"][0]["message"]["content"]
     if not isinstance(text, str) or not text.strip():
         raise ValueError("模型没有返回文本。")
     return text

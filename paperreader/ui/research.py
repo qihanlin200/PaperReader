@@ -10,25 +10,67 @@ import shutil
 from uuid import uuid4
 
 from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, QRunnable, Qt, QTimer, QUrl, Signal, Slot
-from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPen
+from PySide6.QtGui import QColor, QLinearGradient, QDesktopServices, QIcon, QPainter, QPen
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QTabBar,
-    QListWidget, QListWidgetItem, QPushButton, QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QTabWidget, QTreeWidget, QTreeWidgetItem, QStyle, QStyleOptionButton, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListView, QMenu, QMessageBox, QTabBar,
+    QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QTabWidget, QTreeWidget, QTreeWidgetItem, QStyle, QStyleOptionButton, QVBoxLayout, QWidget,
 )
 
+from paperreader.services.themes import get_theme
 from paperreader.services.lazy import fitz, keyring
-from paperreader.services.research import CITATION, RunLimit, execute, expand_mindmap, space_title
+from paperreader.research_agent import CITATION, RunLimit, execute, expand_mindmap, space_title
 from paperreader.services.research_pdf import PDFDownloadBlocked, download_citation_pdf
 from paperreader.ui.composer import QuestionEdit
 from paperreader.ui.pdf import ContinuousPDF
+from paperreader.ui.math_render import markdown_html
+from paperreader.research_agent.skills import answer_cards
+from paperreader.research_agent.answer_layout import split_closing_summary, validate_layout
+from paperreader.ui.research_cards import card as research_card
 from paperreader.ui.research_cards import ResearchCards, ResearchConclusions, conclusion_markdown, draw_mindmap, link, plain, position
 from paperreader.ui.research_evidence import EvidenceMatrix
-from paperreader.ui.research_overview import EvidenceOverview, SubtaskOverview
+from paperreader.ui.research_overview import EvidenceOverview, SubtaskOverview, WrappedOverviewLabel
+from paperreader.ui.research_history import ResearchHistory
 from paperreader.ui.research_mindmap import MindmapCanvas
 from paperreader.ui.research_progress import ResearchProgress
 from paperreader.ui.research_trace import ResearchTrace
-from paperreader.ui.theme import theme_color
+from paperreader.ui.theme import current_theme, theme_color
+from paperreader.ui.row_hover import RowHoverDelegate
 from paperreader.ui.work_rail import menu_symbol_icon
+
+
+class ScrollTextCard(QFrame):
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        with QPainter(self) as painter:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(Qt.PenStyle.NoPen)
+            paper = QLinearGradient(0, 0, self.width(), 0)
+            for stop, color in ((0, "#b98e58"), (0.12, "#efd3a1"),
+                                (0.85, "#efd3a1"), (1, "#b98e58")):
+                paper.setColorAt(stop, QColor(color))
+            painter.setBrush(paper)
+            painter.drawRect(self.rect().adjusted(8, 5, -8, -5))
+            for x in (1, self.width() - 12):
+                rod = QLinearGradient(x, 0, x + 11, 0)
+                for stop, color in ((0, "#252619"), (0.4, "#625e37"), (1, "#28281c")):
+                    rod.setColorAt(stop, QColor(color))
+                painter.setBrush(rod)
+                painter.drawRoundedRect(QRectF(x, 1, 11, self.height() - 2), 4, 4)
+                painter.setBrush(QColor("#97602f"))
+                for y in (2, self.height() - 7):
+                    painter.drawRoundedRect(QRectF(x, y, 11, 5), 2, 2)
+
+
+class ResearchModelPicker(QComboBox):
+    def showPopup(self):
+        if not self.count():
+            return
+        view = self.view()
+        view.ensurePolished()
+        visible_rows = min(self.count(), self.maxVisibleItems())
+        height = sum(view.sizeHintForRow(row) for row in range(visible_rows))
+        view.setMinimumHeight(height + 2 * view.frameWidth())
+        super().showPopup()
 
 
 class DiscussionScroll(QScrollArea):
@@ -51,6 +93,31 @@ class DiscussionScroll(QScrollArea):
         event.accept()
 
 
+class DiscussionQuestion(WrappedOverviewLabel):
+    def sizeHint(self):
+        hint = super().sizeHint()
+        metrics = self.fontMetrics()
+        width = max((metrics.horizontalAdvance(line) for line in self.text().splitlines()), default=0)
+        margins = self.contentsMargins()
+        width += margins.left() + margins.right() + 2 * self.margin() + 2
+        width = min(self.maximumWidth(), width)
+        hint.setWidth(width)
+        hint.setHeight(self.heightForWidth(width))
+        return hint
+
+
+class DiscussionAvatar(QLabel):
+    def refresh_avatar(self):
+        avatar = get_theme(current_theme()).avatar
+        icon = QIcon(str(avatar)) if avatar else menu_symbol_icon("research", color="#66ddda")
+        self.setPixmap(icon.pixmap(30, 30))
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.StyleChange:
+            self.refresh_avatar()
+
+
 class DiscussionMindmap(QWidget):
     def __init__(self):
         super().__init__()
@@ -61,6 +128,11 @@ class DiscussionMindmap(QWidget):
     def set_mindmap(self, mindmap):
         if self.mindmap != mindmap:
             self.mindmap = mindmap
+            self.refresh_image()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.StyleChange and hasattr(self, "mindmap"):
             self.refresh_image()
 
     def resizeEvent(self, event):
@@ -204,6 +276,7 @@ class ResearchWorkspace(QWidget):
         layout.addWidget(self.split)
         left, left_layout = self.pane("LibraryPanel")
         left.setMinimumWidth(220)
+        left_layout.setContentsMargins(8, 10, 12, 10)
         row = QHBoxLayout()
         row.addWidget(heading("研究空间"), 1)
         add = button("＋", self.create_space)
@@ -239,6 +312,7 @@ class ResearchWorkspace(QWidget):
         knowledge.addLayout(row)
         self.sources = QListWidget()
         self.sources.setObjectName("ResearchSourceList")
+        self.sources.setItemDelegate(RowHoverDelegate(self.sources))
         self.sources.itemDoubleClicked.connect(self.preview_source)
         knowledge.addWidget(self.sources, 1)
         left_layout.addWidget(self.knowledge, 2)
@@ -259,7 +333,24 @@ class ResearchWorkspace(QWidget):
         self.discussion_space.setObjectName("ResearchDiscussionScroll")
         self.discussion_space.setWidgetResizable(True)
         self.discussion_space.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        discussion_panel = QWidget()
+        conversation = QWidget()
+        self.turn_layout = QVBoxLayout(conversation)
+        self.turn_layout.setContentsMargins(18, 20, 18, 16)
+        self.turn_layout.setSpacing(24)
+        self.turn_layout.addStretch()
+        self.turn_rows = {}
+        self.discussion_limit = 2
+        self.discussion_loader = QTimer(self)
+        self.discussion_loader.setSingleShot(True)
+        self.discussion_loader.setInterval(16)
+        self.discussion_loader.timeout.connect(self.load_next_discussion_turn)
+        self.expanded_turn = None
+        self.map_turn = None
+        self.conclusion_turn = None
+        self.discussion_space.setWidget(conversation)
+        discussion_panel = self.turn_details = QWidget()
+        discussion_panel.setParent(conversation)
+        discussion_panel.hide()
         discussion_panel.setObjectName("ResearchDiscussionPanel")
         discussion = QGridLayout(discussion_panel)
         discussion.setContentsMargins(0, 0, 0, 0)
@@ -267,7 +358,6 @@ class ResearchWorkspace(QWidget):
         discussion.setColumnStretch(0, 1)
         discussion.setColumnStretch(1, 1)
         discussion.setRowStretch(4, 1)
-        self.discussion_space.setWidget(discussion_panel)
         work.addWidget(self.discussion_space, 1)
         self.task_header = QWidget()
         self.task_header.setObjectName("ResearchOverview")
@@ -331,10 +421,10 @@ class ResearchWorkspace(QWidget):
         discussion.addWidget(self.discussion_summary_card, 3, 0, 1, 2)
         for child in discussion_panel.findChildren(QWidget):
             child.installEventFilter(self.discussion_space)
-        self.chat = ResearchCards()
-        self.chat.setObjectName("ResearchConversation")
+        self.chat = ResearchHistory()
         self.chat.anchorClicked.connect(self.open_detail)
-        self.work_tabs.currentChanged.connect(self.switch_work_tab)
+        self.work_tabs.currentChanged.connect(lambda _: self.render_chat())
+        self.work_tabs.tabBarClicked.connect(self.reset_turn_tab)
         work.addWidget(self.chat, 1)
         self.evidence_matrix = EvidenceMatrix()
         self.evidence_matrix.anchorClicked.connect(self.open_detail)
@@ -342,7 +432,27 @@ class ResearchWorkspace(QWidget):
         self.conclusions = ResearchConclusions(line_height=170)
         self.conclusions.setObjectName("ResearchConversation")
         self.conclusions.anchorClicked.connect(self.open_detail)
-        work.addWidget(self.conclusions, 1)
+        self.conclusion_panel = QWidget()
+        conclusion_layout = QVBoxLayout(self.conclusion_panel)
+        conclusion_layout.setContentsMargins(0, 0, 0, 0)
+        conclusion_layout.addWidget(button("‹ 返回", lambda: self.reset_turn_tab(3)),
+                                    0, Qt.AlignmentFlag.AlignLeft)
+        conclusion_layout.addWidget(self.conclusions, 1)
+        self.conclusion_cards = DiscussionScroll()
+        self.conclusion_cards.setWidgetResizable(True)
+        conclusion_body = QWidget()
+        self.conclusion_cards.semantic_layout = QVBoxLayout(conclusion_body)
+        self.conclusion_cards.semantic_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.conclusion_cards.setWidget(conclusion_body)
+        conclusion_layout.addWidget(self.conclusion_cards, 1)
+        self.conclusion_cards.hide()
+        self.conclusion_layout_snapshot = None
+        work.addWidget(self.conclusion_panel, 1)
+        self.map_history = ResearchHistory("查看脑图 ›", "research-map", "暂无思维脑图。")
+        self.conclusion_history = ResearchHistory("查看结论 ›", "research-conclusion", "暂无最终结论。")
+        for history in (self.map_history, self.conclusion_history):
+            history.anchorClicked.connect(self.open_detail)
+            work.addWidget(history, 1)
         self.full_map_run = None
         self.full_map_pending = {}
         self.full_map_error = {}
@@ -350,6 +460,7 @@ class ResearchWorkspace(QWidget):
         map_layout = QVBoxLayout(self.full_map_panel)
         map_layout.setContentsMargins(0, 0, 0, 0)
         map_header = QHBoxLayout()
+        map_header.addWidget(button("‹ 返回", lambda: self.reset_turn_tab(2)))
         self.full_map_status = QLabel()
         self.full_map_status.setWordWrap(True)
         map_header.addWidget(self.full_map_status, 1)
@@ -370,7 +481,11 @@ class ResearchWorkspace(QWidget):
         self.composer.setMaximumHeight(150)
         self.composer.submitRequested.connect(self.start)
         self.send = button("发送 ↑", self.send_or_stop, "Primary")
-        self.models = QComboBox()
+        self.models = ResearchModelPicker()
+        self.models.setObjectName("ResearchModelPicker")
+        model_view = QListView(self.models)
+        model_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.models.setView(model_view)
         self.models.setAccessibleName("研究使用的模型")
         self.models.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.models.setMinimumContentsLength(8)
@@ -380,7 +495,7 @@ class ResearchWorkspace(QWidget):
         self.academic = QPushButton("深度检索")
         self.academic.setObjectName("ResearchSearchToggle")
         self.academic.setCheckable(True)
-        self.academic.setToolTip("开启后将当前问题发送给 Crossref，查询论文题名与 DOI。")
+        self.academic.setToolTip("允许按问题需要使用已配置的网页或学术检索服务。")
         self.composer.footer_layout.addWidget(self.academic)
         self.composer.footer_layout.addStretch()
         for control in (self.models, self.academic, self.send):
@@ -407,7 +522,16 @@ class ResearchWorkspace(QWidget):
         self.subtask_cache = None
         self.content.anchorClicked.connect(self.open_pdf)
         self.trace = ResearchTrace()
+        self.trace_refresh = QTimer(self)
+        self.trace_refresh.setSingleShot(True)
+        self.trace_refresh.setInterval(16)
+        self.trace_refresh.timeout.connect(self.refresh_pending_trace)
+        self.trace_save = QTimer(self)
+        self.trace_save.setSingleShot(True)
+        self.trace_save.setInterval(400)
+        self.trace_save.timeout.connect(self.save)
         self.trace.toggle_requested.connect(self.toggle_trace)
+        self.trace.model_requested.connect(self.open_model_call)
         self.trace.export_requested.connect(self.export_trace)
         self.tabs.addTab(self.trace, menu_symbol_icon("pulse"), "执行追踪")
         self.tabs.addTab(self.content, menu_symbol_icon("document"), "引用")
@@ -467,6 +591,9 @@ class ResearchWorkspace(QWidget):
         pane = self.tabs.widget(index)
         if pane is self.pdf_panel:
             self.clear_pdf()
+        elif pane is not None and pane.property("traceModel"):
+            self.tabs.removeTab(index)
+            pane.deleteLater()
         elif pane is not None:
             self.tabs.setTabVisible(index, False)
         if not any(self.tabs.isTabVisible(i) for i in range(self.tabs.count())):
@@ -479,6 +606,11 @@ class ResearchWorkspace(QWidget):
             self.tabs.setCurrentWidget(pane)
 
     def close_detail(self):
+        for index in reversed(range(self.tabs.count())):
+            pane = self.tabs.widget(index)
+            if pane.property("traceModel"):
+                self.tabs.removeTab(index)
+                pane.deleteLater()
         self.clear_pdf()
         self.download_status.hide()
         self.detail_slot.setCurrentWidget(self.detail)
@@ -507,7 +639,12 @@ class ResearchWorkspace(QWidget):
         return panel, layout
 
     def add_space_item(self, name):
-        QListWidgetItem(menu_symbol_icon("folder"), name, self.space_list)
+        QListWidgetItem(menu_symbol_icon("research-topic"), name, self.space_list)
+
+    def refresh_space_icons(self):
+        icon = menu_symbol_icon("research-topic")
+        for row in range(self.space_list.count()):
+            self.space_list.item(row).setIcon(icon)
 
     def filter_spaces(self, text):
         words = text.casefold().split()
@@ -516,6 +653,8 @@ class ResearchWorkspace(QWidget):
             item.setHidden(not all(word in item.text().casefold() for word in words))
 
     def save(self):
+        if hasattr(self, "trace_save"):
+            self.trace_save.stop()
         temp = self.path.with_suffix(".tmp")
         try:
             temp.write_text(json.dumps(self.spaces, ensure_ascii=False), encoding="utf-8")
@@ -678,6 +817,9 @@ class ResearchWorkspace(QWidget):
             self.window.statusBar().showMessage("部分论文缓存未能删除。")
 
     def switch_space(self):
+        self.discussion_loader.stop()
+        self.discussion_limit = 2
+        self.expanded_turn = self.map_turn = self.conclusion_turn = None
         self.full_map_run = None
         self.subtask_timer.stop()
         self.subtask_cache = None
@@ -689,9 +831,9 @@ class ResearchWorkspace(QWidget):
         self.discussion_space.verticalScrollBar().setValue(0)
         self.close_detail()
         self.refresh_sources()
+        self.render()
         if self.visible_space and self.visible_space["runs"]:
             self.show_detail((self.visible_space["runs"][-1], None, None), self.trace)
-        self.render()
 
     def refresh_sources(self):
         space = self.selected()
@@ -699,7 +841,10 @@ class ResearchWorkspace(QWidget):
         self.sources.clear()
         if space:
             for source in space["sources"]:
-                icon = "document" if source["kind"] == "paper" else "text"
+                if current_theme() == "naruto":
+                    icon = "paper"
+                else:
+                    icon = "document" if source["kind"] == "paper" else "text"
                 item = QListWidgetItem(menu_symbol_icon(icon), source["title"], self.sources)
                 item.setToolTip(source["title"])
 
@@ -867,6 +1012,7 @@ class ResearchWorkspace(QWidget):
         self.window.pool.start(job)
         self.render()
 
+
     @staticmethod
     def append_trace(run, message):
         run["trace"].append([datetime.now().isoformat(timespec="seconds"), message])
@@ -888,7 +1034,11 @@ class ResearchWorkspace(QWidget):
         if kind == "chunk":
             return
         if kind == "workflow":
+            was_research = self.is_research(run)
             run["workflow"], run["evidence"] = value
+            if (not was_research and self.is_research(run) and self.selected() is space
+                    and self.expanded_turn is None):
+                self.expanded_turn = run["id"]
         elif kind == "checkpoint":
             run["evidence"] = value
             run["scanned"] += 1
@@ -897,6 +1047,14 @@ class ResearchWorkspace(QWidget):
             run["academic_done"] = True
         elif kind == "trace":
             self.append_trace(run, value)
+        elif kind == "trace_model":
+            run.setdefault("trace_models", {})[str(len(run["trace"]) - 1)] = value
+        elif kind == "trace_usage":
+            run.setdefault("trace_usage", {})[str(len(run["trace"]) - 1)] = value
+        elif kind == "answer_layout":
+            run["answer_layout"] = value
+        elif kind == "answer_cards":
+            run["answer_cards"] = value
         elif kind == "full_mindmap":
             run["full_mindmap"] = value
         elif kind == "done":
@@ -911,45 +1069,44 @@ class ResearchWorkspace(QWidget):
             run["answer"] = answer or run["answer"]
             self.append_trace(run, status)
             self.active = None
-            if (answer and not run.get("workflow", {}).get("tasks") and self.selected() is space
-                    and self.detail_run == (run, None, None) and self.tabs.currentWidget() is self.trace
-                    and self.detail_slot.currentWidget() is self.detail):
-                self.show_detail((run, None, "answer"), self.content)
-        self.save()
-        if kind == "trace":
-            if self.selected() is space and self.work_tabs.currentIndex() == 0:
-                self.update_subtasks(run, len(space["runs"]) - 1)
-            if (self.detail_run and self.detail_run[0] is run and self.detail_slot.currentWidget() is self.detail
-                    and self.tabs.currentWidget() is self.trace):
-                self.render_trace(run)
-        elif self.selected() is space or kind == "done":
-            self.render()
+        if kind in ("trace", "trace_usage", "trace_model"):
+            if not self.trace_save.isActive():
+                self.trace_save.start()
+            if not self.trace_refresh.isActive():
+                self.trace_refresh.start()
+        else:
+            self.save()
+            if self.selected() is space or kind == "done":
+                self.render()
 
-    def switch_work_tab(self):
-        space = self.selected()
-        runs = space["runs"] if space else []
-        self.update_task_header(runs[-1] if runs else None)
-        self.render_chat()
+    def refresh_pending_trace(self):
+        if self.active:
+            space, run, _ = self.active
+            if self.expanded_turn == run["id"] and self.selected() is space:
+                self.update_subtasks(run, len(space["runs"]) - 1)
+        if (self.detail_run and self.detail_slot.currentWidget() is self.detail
+                and self.tabs.currentWidget() is self.trace):
+            self.render_trace(self.detail_run[0])
+
+    def reset_turn_tab(self, index):
+        if index == 2:
+            self.map_turn = None
+        elif index == 3:
+            self.conclusion_turn = None
+        else:
+            return
+        if self.work_tabs.currentIndex() == index:
+            self.render_chat()
 
     def render(self):
-        space = self.selected()
-        runs = space["runs"] if space else []
-        here = bool(self.active and self.active[0] is space)
         stopping = bool(self.active and self.active[2].stop.is_set())
         self.send.setText("正在停止…" if stopping else "停止 ■" if self.active else "发送 ↑")
         self.send.setEnabled(not stopping)
-        status = runs[-1]["status"] if runs else ""
-        if here:
-            status = "正在停止…" if self.active[2].stop.is_set() else "Agent 正在研究…"
-        elif self.active:
-            status = "其他空间正在运行"
-        self.status.setText(status)
-        self.update_task_header(runs[-1] if runs else None)
         self.render_chat()
         if self.detail_run and self.detail_slot.currentWidget() is self.detail:
             self.render_detail()
 
-    def update_task_header(self, run):
+    def update_task_header(self, run, index):
         state = run.get("workflow") if run else None
         discussion = self.work_tabs.currentIndex() == 0
         show_task = run is not None
@@ -978,9 +1135,9 @@ class ResearchWorkspace(QWidget):
         self.task_subtitle.setVisible(bool(subtitle))
         self.task_steps.set_step(stage)
         self.task_percentage.setText(f"{progress}%" if stage >= 0 else "")
+        self.status.setText(run["status"])
         if run["status"] == "运行中":
             self.status.setText("进行中 · " + (ResearchProgress.STAGES[stage] if 0 <= stage < 5 else phase))
-        index = len(self.selected()["runs"]) - 1
         self.task_trace.setText(link("查看 Trace", f"research-trace:{index}"))
         actions = []
         if not self.active and run["status"] not in ("已完成", "运行中", "等待补充"):
@@ -993,7 +1150,8 @@ class ResearchWorkspace(QWidget):
         self.task_actions.setVisible(bool(actions))
         if discussion:
             self.update_subtasks(run, index)
-            self.evidence_overview.set_evidence(index, run["evidence"])
+            awaiting_evidence = run["status"] == "运行中" and phase in ("规划", "执行")
+            self.evidence_overview.set_evidence(index, run["evidence"], awaiting_evidence=awaiting_evidence)
 
     def update_subtasks(self, run, index):
         tasks = run.get("workflow", {}).get("tasks", [])
@@ -1034,6 +1192,8 @@ class ResearchWorkspace(QWidget):
         return panel
 
     def open_full_mindmap(self):
+        if self.work_tabs.currentIndex() == 0:
+            self.map_turn = self.expanded_turn
         self.work_tabs.setCurrentIndex(2)
         self.render_chat(retry_map=True)
 
@@ -1089,9 +1249,248 @@ class ResearchWorkspace(QWidget):
         self.full_map_retry.setVisible(bool(error and not root and not pending))
         self.full_map_canvas.set_mindmap(root)
 
+    @staticmethod
+    def is_research(run):
+        state = run.get("workflow") or {}
+        return state.get("mode") == "research" or bool(state.get("tasks"))
+
+    def toggle_turn(self, identifier):
+        self.expanded_turn = None if self.expanded_turn == identifier else identifier
+        self.render_discussion(self.selected())
+
+    def load_next_discussion_turn(self):
+        if self.work_tabs.currentIndex() == 0:
+            self.discussion_limit += 1
+            self.render_discussion(self.selected())
+
     def render_discussion(self, space):
+        scroll = self.discussion_space.verticalScrollBar()
+        position_before_render = scroll.value()
         runs = space["runs"] if space else []
-        run = runs[-1] if runs else None
+        expanded_row = None
+        identifiers = {run["id"] for run in runs}
+        for identifier in self.turn_rows.keys() - identifiers:
+            row, *_ = self.turn_rows.pop(identifier)
+            if self.turn_details.parent() is row:
+                row.layout().removeWidget(self.turn_details)
+                self.turn_details.setParent(self.discussion_space.widget())
+            self.turn_layout.removeWidget(row)
+            row.hide()
+            row.deleteLater()
+        if len(runs) > self.discussion_limit and not self.discussion_loader.isActive():
+            self.discussion_loader.start()
+        for index, run in enumerate(runs[:self.discussion_limit]):
+            identifier = run["id"]
+            if identifier not in self.turn_rows:
+                row = QWidget()
+                layout = QVBoxLayout(row)
+                layout.setContentsMargins(0, 4, 0, 4)
+                question = DiscussionQuestion(run["question"])
+                question.setObjectName("ResearchQuestionBubble")
+                question.setMaximumWidth(720)
+                question.setTextFormat(Qt.TextFormat.PlainText)
+                question.setWordWrap(True)
+                question.setIndent(0)
+                layout.addWidget(question, 0, Qt.AlignmentFlag.AlignRight)
+                agent = QHBoxLayout()
+                agent.setSpacing(12)
+                avatar = DiscussionAvatar()
+                avatar.setObjectName("ResearchAgentAvatar")
+                avatar.refresh_avatar()
+                avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                avatar.setFixedSize(34, 34)
+                agent.addWidget(avatar, 0, Qt.AlignmentFlag.AlignTop)
+                card = QFrame()
+                content = QVBoxLayout(card)
+                content.setContentsMargins(12, 10, 12, 10)
+                agent.addWidget(card, 1)
+                layout.addLayout(agent)
+                reply = WrappedOverviewLabel()
+                reply.setTextFormat(Qt.TextFormat.RichText)
+                reply.setWordWrap(True)
+                reply.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse |
+                                              Qt.TextInteractionFlag.LinksAccessibleByMouse |
+                                              Qt.TextInteractionFlag.LinksAccessibleByKeyboard)
+                reply.linkActivated.connect(lambda target: self.open_detail(QUrl(target)))
+                content.addWidget(reply)
+                card.semantic_layout = QVBoxLayout()
+                content.addLayout(card.semantic_layout)
+                full_answer = button("查看完整回答", lambda checked=False, i=index:
+                                     self.open_detail(QUrl(f"research-answer:{i}")))
+                content.addWidget(full_answer, 0, Qt.AlignmentFlag.AlignLeft)
+                card.full_answer = full_answer
+                toggle = button("", lambda checked=False, ident=identifier: self.toggle_turn(ident))
+                trace = button("查看 Trace", lambda checked=False, i=index:
+                               self.open_detail(QUrl(f"research-trace:{i}")))
+                actions = QHBoxLayout()
+                actions.addWidget(toggle)
+                actions.addWidget(trace)
+                actions.addStretch()
+                content.addLayout(actions)
+                self.turn_layout.insertWidget(index, row)
+                for widget in (row, question, reply, toggle, trace, card, avatar):
+                    widget.installEventFilter(self.discussion_space)
+                self.turn_rows[identifier] = row, reply, toggle, trace, card
+            row, reply, toggle, trace, card = self.turn_rows[identifier]
+            research = self.is_research(run)
+            expanded = research and identifier == self.expanded_turn
+            style = "ResearchResultCard" if research else "ResearchPlainReply"
+            if card.objectName() != style:
+                card.setObjectName(style)
+                card.style().unpolish(card)
+                card.style().polish(card)
+            toggle.setVisible(research)
+            trace.setVisible(research)
+            reply.show()
+            card.full_answer.hide()
+            if research:
+                reply.answer_snapshot = None
+                toggle.setText("收起研究卡片 ▴" if expanded else "展开研究卡片 ▾")
+                state = run.get("workflow") or {}
+                title = state.get("goal") or run["question"]
+                mindmap = self.mindmap_for(run) or {}
+                topics = [branch["label"] for branch in mindmap.get("branches", [])]
+                if not topics:
+                    topics = [task["title"] for task in state.get("tasks", [])]
+                summary = "、".join(topic[:18] for topic in topics[:3])
+                preview = f"研究要点：{plain(summary)}。 " if summary else ""
+                status = run["status"]
+                status_suffix = f" · {escape(status)}" if status != "已完成" else ""
+                reply.setText(f"<b>{plain(title)}</b>{status_suffix}"
+                              + (f"<p>{preview}展开卡片查看详细内容。</p>" if not expanded else ""))
+            else:
+                answer = run["answer"] or ("正在处理…" if run["status"] == "运行中" else run["status"])
+                completed = run["status"] == "已完成"
+                snapshot = (answer, index, current_theme(), completed, run.get("answer_layout"),
+                            self.discussion_space.viewport().width() >= 680)
+                if getattr(reply, "answer_snapshot", None) != snapshot:
+                    semantic = completed and self.render_answer_layout(card, run.get("answer_layout"), index)
+                    sections = self.answer_card_markup(answer_cards(answer)) if completed and not semantic else ""
+                    markup = sections or markdown_html(answer, {}, {}, renderer=None)
+                    markup = CITATION.sub(
+                        lambda match: link(match[0], f"research-content:{index}-{match[1]}"), markup)
+                    reply.setText(markup)
+                    reply.answer_snapshot = snapshot
+                    card.has_answer_cards = bool(sections or semantic)
+                    card.has_semantic_layout = bool(semantic)
+                reply.setVisible(not card.has_semantic_layout)
+                card.full_answer.setVisible(card.has_answer_cards)
+            if reply.width() > 0:
+                reply.setMinimumHeight(reply.heightForWidth(reply.width()))
+            if expanded:
+                expanded_row = row
+                if self.turn_details.parent() is not row:
+                    row.layout().addWidget(self.turn_details)
+                self.turn_details.show()
+                self.update_task_header(run, index)
+                self.render_turn_details(run, index)
+        if expanded_row is None:
+            self.turn_details.hide()
+        self.turn_layout.activate()
+        scroll.setValue(position_before_render)
+
+    def render_answer_layout(self, card, payload, index, *, scroll_area=None):
+        scroll_area = scroll_area or self.discussion_space
+        target = card.semantic_layout
+        while target.count():
+            widget = target.takeAt(0).widget()
+            widget.hide()
+            widget.deleteLater()
+        if not isinstance(payload, dict):
+            return False
+        blocks = payload.get("blocks")
+        layout = payload.get("layout")
+        if (not isinstance(blocks, list) or not all(isinstance(block, str) for block in blocks)
+                or not validate_layout(layout, len(blocks))):
+            return False
+        final_body, closing = split_closing_summary(blocks[-1])
+        blocks = [*blocks[:-1], final_body]
+
+        def render_text(markdown, *, scroll_style=False):
+            label = WrappedOverviewLabel()
+            label.setWordWrap(True)
+            label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+            label.setTextFormat(Qt.TextFormat.RichText)
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction |
+                                          Qt.TextInteractionFlag.TextSelectableByMouse)
+            label.linkActivated.connect(lambda url: self.open_detail(QUrl(url)))
+            markup = markdown_html(markdown, {}, {}, renderer=None)
+            label.setText(CITATION.sub(
+                lambda match: (
+                    f'<a style="color:#793516" href="research-content:{index}-{match[1]}">{match[0]}</a>'
+                    if scroll_style else link(match[0], f"research-content:{index}-{match[1]}")
+                ), markup))
+            label.installEventFilter(scroll_area)
+            return label
+
+        for group in layout["groups"]:
+            component = group["component"]
+            container = QTabWidget() if component == "Tabs" else QWidget()
+            if component != "Tabs":
+                horizontal = component == "Row" and scroll_area.viewport().width() >= 680
+                children = QHBoxLayout(container) if horizontal else QVBoxLayout(container)
+                children.setContentsMargins(0, 0, 0, 0)
+            for number, item in enumerate(group["items"], 1):
+                scroll_style = current_theme() == "naruto" and payload.get("text_component", "Text") in (
+                    "Text", "ScrollText")
+                panel = ScrollTextCard() if scroll_style else QFrame()
+                panel.setObjectName("ScrollTextCard" if scroll_style else "ResearchResultCard")
+                body = QVBoxLayout(panel)
+                body.setAlignment(Qt.AlignmentFlag.AlignTop)
+                if scroll_style:
+                    body.setContentsMargins(22, 15, 22, 15)
+                title = item["title"]
+                markdown = "\n\n".join(blocks[block] for block in item["blocks"])
+                original_heading = re.match(r"^ {0,3}#{1,6}[ \t]+([^\n]+)\n*", markdown)
+                if original_heading:
+                    title = original_heading[1].strip()
+                    markdown = markdown[original_heading.end():]
+                if component != "Tabs" and (title or component == "List"):
+                    heading_label = heading(f"{number}. {title}" if component == "List" and not original_heading else title)
+                    heading_label.setTextFormat(Qt.TextFormat.PlainText)
+                    heading_label.setWordWrap(True)
+                    heading_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+                    body.addWidget(heading_label)
+                body.addWidget(render_text(markdown, scroll_style=scroll_style))
+                if component == "Tabs":
+                    container.addTab(panel, title or str(number))
+                else:
+                    children.addWidget(panel, 1)
+            target.addWidget(container)
+        if closing:
+            scroll_style = current_theme() == "naruto"
+            summary_card = ScrollTextCard() if scroll_style else QFrame()
+            summary_card.setObjectName("ScrollTextCard" if scroll_style else "ResearchResultCard")
+            summary_layout = QVBoxLayout(summary_card)
+            if scroll_style:
+                summary_layout.setContentsMargins(22, 15, 22, 15)
+            summary_layout.addWidget(render_text(closing, scroll_style=scroll_style))
+            target.addWidget(summary_card)
+        return True
+
+    @staticmethod
+    def answer_card_markup(components):
+        if not isinstance(components, list) or not components:
+            return ""
+        try:
+            nodes = {node["id"]: node for node in components}
+            root = nodes["root"]
+            if root["component"] != "Column":
+                return ""
+            cards = []
+            for identifier in root["children"]:
+                section = nodes[identifier]
+                column = nodes[section["child"]]
+                title, body = (nodes[key] for key in column["children"])
+                if (section["component"], column["component"], title["component"], body["component"]) != (
+                        "Card", "Column", "Text", "Text"):
+                    return ""
+                cards.append(research_card(title["text"], markdown_html(body["text"], {}, {}, renderer=None)))
+            return "".join(cards)
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return ""
+
+    def render_turn_details(self, run, index):
         mindmap = self.mindmap_for(run) if run else None
         self.discussion_mindmap_card.setVisible(bool(mindmap))
         self.discussion_mindmap.set_mindmap(mindmap)
@@ -1114,7 +1513,6 @@ class ResearchWorkspace(QWidget):
                 summary = " ".join(sentences) or answer
                 summary = re.sub(r"[*_`]+", "", summary)
                 if state.get("phase") == "完成":
-                    index = len(runs) - 1
                     actions = link("查看最终结论 ›", f"research-conclusion:{index}")
             else:
                 fallback = {"已停止": "研究运行已手动停止。", "达到时间上限": "研究未能在运行时间上限内完成。",
@@ -1135,19 +1533,22 @@ class ResearchWorkspace(QWidget):
         full_map = tab == 2
         if full_map:
             self.full_map_run = next((run for run in reversed(space["runs"])
-                                      if run.get("answer") or run.get("full_mindmap")), None) if space else None
-        self.full_map_panel.setVisible(full_map)
+                                      if self.is_research(run) and (run.get("answer") or run.get("full_mindmap"))
+                                      and run["id"] == self.map_turn), None) if space else None
+        self.full_map_panel.setVisible(full_map and self.full_map_run is not None)
+        self.map_history.setVisible(full_map and self.full_map_run is None)
+        self.conclusion_history.setVisible(tab == 3 and self.conclusion_turn is None)
         self.chat.setVisible(tab == 4)
         self.evidence_matrix.setVisible(tab == 1)
-        self.conclusions.setVisible(tab == 3)
+        self.conclusion_panel.setVisible(tab == 3 and self.conclusion_turn is not None)
         self.discussion_space.setVisible(tab == 0)
         if full_map:
             if self.full_map_run is not None:
                 self.ensure_full_mindmap(self.full_map_run, retry=retry_map)
             else:
-                self.full_map_status.setText("研究生成最终结论后将在这里显示完整脑图。")
-                self.full_map_retry.hide()
-                self.full_map_canvas.set_mindmap(None)
+                self.map_history.set_runs(space["runs"] if space else [],
+                                          lambda run: self.is_research(run) and bool(
+                                              run.get("full_mindmap") or run.get("answer")))
             return
         if tab == 0:
             self.render_discussion(space)
@@ -1160,10 +1561,33 @@ class ResearchWorkspace(QWidget):
                 for number, source in enumerate(run["evidence"], 1)
             ])
             return
+        if tab == 4:
+            self.chat.set_runs(space["runs"] if space else [])
+            return
+        if self.conclusion_turn is None:
+            self.conclusion_history.set_runs(space["runs"] if space else [],
+                                              lambda run: self.is_research(run) and bool(run["answer"])
+                                              and run.get("workflow", {}).get("phase") == "完成")
+            return
         for index, run in enumerate(space["runs"] if space else []):
             state = run.get("workflow", {})
             if tab == 3:
-                if state.get("phase") == "完成" and run["answer"]:
+                if (self.is_research(run) and state.get("phase") == "完成" and run["answer"]
+                        and (self.conclusion_turn is None or run["id"] == self.conclusion_turn)):
+                    snapshot = (run["id"], index, current_theme(), run.get("answer_layout"))
+                    if snapshot != self.conclusion_layout_snapshot:
+                        self.conclusion_layout_snapshot = snapshot
+                        self.has_conclusion_layout = self.render_answer_layout(
+                            self.conclusion_cards, run.get("answer_layout"), index,
+                            scroll_area=self.conclusion_cards)
+                        if self.has_conclusion_layout:
+                            original = button("查看完整结论", lambda checked=False, i=index:
+                                              self.open_detail(QUrl(f"research-answer:{i}")))
+                            self.conclusion_cards.semantic_layout.addWidget(original, 0, Qt.AlignmentFlag.AlignLeft)
+                    self.conclusion_cards.setVisible(self.has_conclusion_layout)
+                    self.conclusions.setVisible(not self.has_conclusion_layout)
+                    if self.has_conclusion_layout:
+                        return
                     key = (run["id"], index)
                     cached = self.conclusion_cache.get(key)
                     if not cached or cached[0] != run["answer"]:
@@ -1176,22 +1600,14 @@ class ResearchWorkspace(QWidget):
                     actions = link("查看引用", f"research-content:{index}")
                     blocks.append(("最终结论", answer, True, run["status"], actions, True))
                 continue
-            if tab == 4:
-                blocks.append((run["question"][:90], "", False, run["status"],
-                               link("打开执行 Trace ›", f"research-trace:{index}"), True))
-                continue
-        empty = ("直接提问即可开始。没有研究空间时，将用首条消息创建空间。"
-                 if not space else "向研究 Agent 提问，也可以添加资料或开启学术检索。")
-        if tab:
-            empty = ("", "暂无可展示的证据。", "研究完成后将在这里显示思维脑图。", "暂无最终结论。研究总结完成后将在这里显示。", "暂无执行记录。")[tab]
-        view = self.conclusions if tab == 3 else self.chat
-        view.anchor_prefix = "research-content:" if tab == 1 else ""
-        view.show_cards(blocks, empty)
+        self.conclusion_cards.hide()
+        self.conclusions.show()
+        self.conclusions.show_cards(blocks, "暂无最终结论。研究总结完成后将在这里显示。")
 
     def open_detail(self, url):
         scheme = url.scheme()
         if scheme not in ("research-content", "research-trace", "research-export",
-                          "research-resume", "research-subtask", "research-conclusion", "research-answer"):
+                          "research-resume", "research-subtask", "research-conclusion", "research-answer", "research-map"):
             return
         index, _, reference = url.path().partition("-")
         space = self.selected()
@@ -1199,8 +1615,14 @@ class ResearchWorkspace(QWidget):
             return
         index = int(index)
         run = space["runs"][index]
-        if scheme == "research-conclusion":
+        if scheme == "research-map":
+            self.map_turn = run["id"]
+            self.work_tabs.setCurrentIndex(2)
+            self.render_chat()
+        elif scheme == "research-conclusion":
+            self.conclusion_turn = run["id"]
             self.work_tabs.setCurrentIndex(3)
+            self.render_chat()
         elif scheme == "research-export":
             self.export_report(run)
         elif scheme == "research-resume":
@@ -1239,11 +1661,17 @@ class ResearchWorkspace(QWidget):
             self.expanded_trace.remove(key)
         else:
             self.expanded_trace.add(key)
+        self.trace.pause_following()
         self.render_trace(run)
 
     def render_trace(self, run):
         events = []
         last = len(run["trace"]) - 1
+        usage_by_event = run.get("trace_usage", {})
+        totals = {}
+        for recorded in usage_by_event.values():
+            for key, value in recorded.items():
+                totals[key] = totals.get(key, 0) + value
         for index, (timestamp, message) in enumerate(run["trace"]):
             stage, _, details = message.partition(" · ")
             active = run["status"] == "运行中" and index == last
@@ -1267,9 +1695,36 @@ class ResearchWorkspace(QWidget):
                 stage = "模型分析 · " + pieces.pop(0)
             details = " · ".join(pieces)
             expanded = (run["id"], index) in self.expanded_trace
-            events.append((stage, timestamp[11:], elapsed, details, expanded, symbol, active, terminal))
+            usage = usage_by_event.get(str(index), {})
+            if index == last and stage in ("已完成", "部分完成"):
+                usage = totals
+            events.append((stage, timestamp[11:], elapsed, details, expanded, symbol, usage, str(index) in run.get("trace_models", {}), active, terminal))
         self.trace.show_events(f"Run {run['id'][:8]}", run["status"], events,
                                run["trace"][0][0] if events else "", run["trace"][-1][0] if events else "")
+
+    def open_model_call(self, index):
+        if not self.detail_run:
+            return
+        run = self.detail_run[0]
+        call = run.get("trace_models", {}).get(str(index))
+        if not call:
+            return
+        identifier = f"{run['id']}:{index}"
+        for tab in range(self.tabs.count()):
+            pane = self.tabs.widget(tab)
+            if pane.property("traceModel") == identifier:
+                self.select_detail_tab(pane)
+                return
+        usage = run.get("trace_usage", {}).get(str(index), {})
+        prompt = "\n\n".join(f"[{item['role']}]\n{item['content']}" for item in call["messages"])
+        pane = QPlainTextEdit()
+        pane.setReadOnly(True)
+        pane.setProperty("traceModel", identifier)
+        pane.setPlainText(
+            f"输入 Token：{usage.get('prompt_tokens', '—')}    输出 Token：{usage.get('completion_tokens', '—')}"
+            f"\n\n请求 Prompt\n{prompt}\n\n模型返回\n{call['response']}")
+        self.tabs.addTab(pane, menu_symbol_icon("document"), f"模型调用 {index + 1}")
+        self.select_detail_tab(pane)
 
     def export_trace(self):
         if not self.detail_run:
@@ -1288,13 +1743,15 @@ class ResearchWorkspace(QWidget):
 
     def render_detail(self):
         run, reference, subtask = self.detail_run
-        if self.tabs.currentWidget() is self.pdf_panel:
+        if self.tabs.currentWidget() is self.pdf_panel or self.tabs.currentWidget().property("traceModel"):
             return
         if self.tabs.currentWidget() is self.trace:
             self.render_trace(run)
             return
         if subtask == "answer":
-            self.content.show_cards([("研究 Agent", run["answer"], True, run["status"], "", True)])
+            index = self.selected()["runs"].index(run)
+            answer = CITATION.sub(lambda match: f"[{match[0]}](research-content:{index}-{match[1]})", run["answer"])
+            self.content.show_cards([("研究 Agent", answer, True, run["status"], "", True)])
             return
         if subtask is not None:
             if self.subtask_cache is self.detail_run:
@@ -1316,6 +1773,8 @@ class ResearchWorkspace(QWidget):
                 else:
                     actions.append(link("下载到本地", f"research-download:{index}"))
                 action = "　　".join(actions)
+            elif source["kind"] == "web":
+                action = link("打开网页", f"research-browser:{index}")
             elif source["kind"] == "paper":
                 action = "　　".join((link("预览", f"research-pdf:{index}"),
                                      link("在阅读列表打开", f"research-paper-reader:{index}")))
@@ -1354,7 +1813,7 @@ class ResearchWorkspace(QWidget):
                 self.open_inline_pdf(source, local=True)
             elif scheme == "research-paper-reader":
                 self.window.open_research_paper(source["id"], source["page"], source.get("rects", ()))
-        elif source["kind"] == "academic":
+        elif source["kind"] in ("academic", "web"):
             if scheme == "research-browser":
                 target = QUrl(source["url"])
                 if target.scheme() == "https" and target.host():
@@ -1524,8 +1983,8 @@ class ResearchWorkspace(QWidget):
             sections.append(f"### 结论草稿\n\n{run['draft']}")
         sections.append("### 证据")
         for index, source in enumerate(run["evidence"], 1):
-            if source["kind"] == "academic":
-                position = f"学术元数据 · {source['url']}"
+            if source["kind"] in ("academic", "web"):
+                position = f"{source.get('level', '题录')} · {source['url']}"
             elif source["kind"] == "paper":
                 position = f"PDF 第 {source['page'] + 1} 页"
             else:

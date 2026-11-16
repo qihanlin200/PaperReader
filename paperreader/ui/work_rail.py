@@ -5,14 +5,37 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QToolButton
 
-from paperreader.ui.theme import theme_color
+from paperreader.ui.theme import current_theme, theme_color
 
 
 def draw_symbol(painter, symbol, color):
     painter.setPen(QPen(color, 1.9, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
                         Qt.PenJoinStyle.RoundJoin))
     painter.setBrush(Qt.BrushStyle.NoBrush)
-    if symbol == 'pdf':
+    if symbol == "research-topic":
+        if current_theme() == "naruto":
+            draw_naruto_topic(painter)
+            return
+        symbol = "folder"
+    if current_theme() == "naruto" and symbol in ("paper", "library", "research", "settings"):
+        draw_naruto_symbol(painter, symbol)
+        return
+    if symbol in ("pages-1", "pages-2", "pages-3"):
+        count = int(symbol[-1])
+        width = {1: 13, 2: 9, 3: 6}[count]
+        gap = 2.5
+        left = (26 - count * width - (count - 1) * gap) / 2
+        for page in range(count):
+            painter.drawRoundedRect(QRectF(left + page * (width + gap), 5, width, 16), 0.8, 0.8)
+    elif symbol in ("expand", "contract"):
+        corner, length = (4, 6) if symbol == "expand" else (9, -5)
+        for horizontal in (-1, 1):
+            for vertical in (-1, 1):
+                x = 13 + horizontal * (corner - 13)
+                y = 13 + vertical * (corner - 13)
+                painter.drawLine(x, y, x + horizontal * length, y)
+                painter.drawLine(x, y, x, y + vertical * length)
+    elif symbol == 'pdf':
         page = QPainterPath(QPointF(5, 2))
         page.lineTo(16, 2); page.lineTo(21, 7); page.lineTo(21, 18)
         page.moveTo(16, 2); page.lineTo(16, 7); page.lineTo(21, 7)
@@ -48,7 +71,7 @@ def draw_symbol(painter, symbol, color):
         folder.lineTo(10, 7); folder.lineTo(13, 10); folder.lineTo(24, 10)
         folder.lineTo(24, 21); folder.lineTo(2, 21); folder.closeSubpath()
         painter.drawPath(folder)
-    elif symbol in ('document', 'text'):
+    elif symbol in ('document', 'paper', 'text'):
         page = QPainterPath(QPointF(5, 2))
         page.lineTo(15, 2); page.lineTo(21, 8); page.lineTo(21, 24)
         page.lineTo(5, 24); page.closeSubpath()
@@ -92,9 +115,10 @@ def draw_symbol(painter, symbol, color):
         shield.lineTo(4, 6); shield.closeSubpath()
         painter.drawPath(shield)
         painter.drawLine(9, 13, 12, 16); painter.drawLine(12, 16, 17, 10)
-    elif symbol == 'download':
-        painter.drawLine(13, 3, 13, 16)
-        painter.drawLine(8, 11, 13, 16); painter.drawLine(13, 16, 18, 11)
+    elif symbol in ('download', 'upload'):
+        tip, wings, tail = (3, 8, 16) if symbol == 'upload' else (16, 11, 3)
+        painter.drawLine(13, tail, 13, tip)
+        painter.drawLine(8, wings, 13, tip); painter.drawLine(13, tip, 18, wings)
         tray = QPainterPath(QPointF(4, 15))
         tray.lineTo(4, 22); tray.lineTo(22, 22); tray.lineTo(22, 15)
         painter.drawPath(tray)
@@ -153,6 +177,72 @@ def draw_symbol(painter, symbol, color):
             angle = index * pi / 4
             painter.drawLine(QPointF(13 + 8 * cos(angle), 13 + 8 * sin(angle)),
                              QPointF(13 + 11 * cos(angle), 13 + 11 * sin(angle)))
+
+
+def draw_naruto_symbol(painter, symbol):
+    path = QPainterPath()
+    if symbol == "paper":
+        painter.save()
+        painter.translate(13, 13)
+        painter.rotate(-42)
+        painter.drawRoundedRect(QRectF(-11, -5, 22, 10), 3, 3)
+        painter.drawEllipse(QRectF(6, -5, 5, 10))
+        painter.drawLine(-2, -5, -2, 5)
+        painter.drawLine(1, -5, 1, 5)
+        painter.drawLine(0, 5, 3, 8)
+        painter.restore()
+    elif symbol == "library":
+        for x in (2, 20):
+            painter.drawRoundedRect(QRectF(x, 4, 4, 18), 2, 2)
+        painter.drawLine(6, 6, 20, 6)
+        painter.drawLine(6, 20, 20, 20)
+        painter.drawLine(9, 11, 17, 11)
+        painter.drawLine(9, 15, 17, 15)
+    elif symbol == "research":
+        painter.drawEllipse(QRectF(2, 2, 17, 17))
+        painter.drawLine(17, 17, 24, 24)
+        path.moveTo(15, 7)
+        path.cubicTo(8, 4, 5, 12, 9, 14)
+        path.cubicTo(13, 16, 16, 10, 11, 10)
+        path.moveTo(7, 10)
+        path.lineTo(5, 14)
+        path.lineTo(10, 14)
+    else:
+        path.moveTo(13, 2)
+        path.quadTo(16, 10, 24, 13)
+        path.quadTo(16, 16, 13, 24)
+        path.quadTo(10, 16, 2, 13)
+        path.quadTo(10, 10, 13, 2)
+        painter.drawEllipse(QRectF(10, 10, 6, 6))
+    painter.drawPath(path)
+
+
+def draw_naruto_topic(painter):
+    body = QPainterPath(QPointF(7, 7))
+    body.cubicTo(2, 12, 3, 22, 8, 24)
+    body.quadTo(13, 25, 18, 24)
+    body.cubicTo(23, 22, 24, 12, 19, 7)
+    body.closeSubpath()
+    painter.fillPath(body, QColor("#ff9954"))
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor("#a75a32"))
+    painter.drawRoundedRect(QRectF(7, 2, 12, 4), 1, 1)
+
+    rope = QPainterPath(QPointF(6, 8))
+    rope.quadTo(14, 5, 21, 8)
+    rope.quadTo(24, 10, 23, 15)
+    painter.strokePath(rope, QPen(QColor("#fff0d6"), 2.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+
+    seal = QPainterPath(QPointF(13, 10))
+    seal.lineTo(18, 16)
+    seal.lineTo(13, 22)
+    seal.lineTo(8, 16)
+    seal.closeSubpath()
+    seal.moveTo(13, 10)
+    seal.lineTo(13, 21)
+    seal.moveTo(10, 17)
+    seal.lineTo(16, 17)
+    painter.strokePath(seal, QPen(QColor("#382216"), 1.3))
 
 
 def menu_symbol_icon(symbol, *, color="#a6b8ce", size=26):

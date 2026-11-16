@@ -30,6 +30,7 @@ class Theme:
     header_animation: Optional[Path] = None
     pdf_paper: str = "#ffffff"
     pdf_ink: str = "#000000"
+    banner_animation: Optional[Path] = None
     banner_crop: tuple = (0.0, 1.0)
     banner_background: str = "#111a28"
     workspace_background: Optional[Path] = None
@@ -99,6 +100,7 @@ def _load_theme(folder):
         header_animation=_asset(folder, data.get("header_animation")),
         pdf_paper=_color(data.get("pdf_paper", "#ffffff")),
         pdf_ink=_color(data.get("pdf_ink", "#000000")),
+        banner_animation=_asset(folder, data.get("banner_animation")),
         banner_crop=(crop_top, crop_bottom),
         banner_background=_color(data.get("banner_background", "#111a28")),
         workspace_background=_asset(folder, data.get("workspace_background")),

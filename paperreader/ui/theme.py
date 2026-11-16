@@ -124,8 +124,26 @@ class ThemeHeader(QWidget):
         self.banner_path = None
         self.animation = None
         self.animation_path = None
+        self.banner_movie = None
+        self.banner_movie_path = None
 
-    def set_animation(self, path):
+    def set_animation(self, path, banner_path=None):
+        if banner_path != self.banner_movie_path:
+            self.banner_movie_path = banner_path
+            if self.banner_movie is not None:
+                self.banner_movie.stop()
+                self.banner_movie.deleteLater()
+                self.banner_movie = None
+            if banner_path is not None:
+                movie = QMovie(str(banner_path), parent=self)
+                if movie.isValid():
+                    self.banner_movie = movie
+                    movie.frameChanged.connect(lambda _: self.update())
+                    if self.isVisible():
+                        movie.start()
+                else:
+                    movie.deleteLater()
+            self.update()
         if path == self.animation_path:
             return
         self.animation_path = path
@@ -146,6 +164,10 @@ class ThemeHeader(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
+        if self.banner_movie is not None:
+            self.banner_movie.setPaused(False)
+            if self.banner_movie.state() == QMovie.MovieState.NotRunning:
+                self.banner_movie.start()
         if self.animation is not None:
             if self.animation.state() == QMovie.MovieState.Paused:
                 self.animation.setPaused(False)
@@ -155,6 +177,8 @@ class ThemeHeader(QWidget):
     def hideEvent(self, event):
         if self.animation is not None and self.animation.state() == QMovie.MovieState.Running:
             self.animation.setPaused(True)
+        if self.banner_movie is not None and self.banner_movie.state() == QMovie.MovieState.Running:
+            self.banner_movie.setPaused(True)
         super().hideEvent(event)
 
     def _animation_rect(self):
@@ -187,16 +211,18 @@ class ThemeHeader(QWidget):
         if self.banner_path != pack.banner:
             self.banner_path = pack.banner
             self.banner = QPixmap(str(pack.banner))
-        if self.banner.isNull():
+        frame = self.banner_movie.currentPixmap() if self.banner_movie is not None else QPixmap()
+        banner = self.banner if frame.isNull() else frame
+        if banner.isNull():
             return
-        width, height = self.banner.width(), self.banner.height()
-        crop_top, crop_bottom = pack.banner_crop
+        width, height = banner.width(), banner.height()
+        crop_top, crop_bottom = pack.banner_crop if frame.isNull() else (0.19, 0.80)
         source = QRectF(0, height * crop_top, width, height * (crop_bottom - crop_top))
         target_width = min(self.width(), round(self.height() * source.width() / source.height()))
         target = QRectF(self.width() - target_width, 0, target_width, self.height())
         base = QColor(pack.banner_background)
         painter.fillRect(self.rect(), base)
-        painter.drawPixmap(target, self.banner, source)
+        painter.drawPixmap(target, banner, source)
         fade_width = target.width() * .28
         fade = QLinearGradient(target.left(), 0, target.left() + fade_width, 0)
         fade.setColorAt(0, base)
@@ -215,6 +241,9 @@ blockquote { background-color: #142630; color: #afc8d7; margin-left: 0; padding:
 pre { background-color: #0b121d; color: #c1e5e4; padding: 12px; white-space: pre-wrap; }
 code { color: #8ee4df; background-color: #182735; }
 a { color: #66ddda; }
+td.chat-gutter { border: none; padding: 0; background: transparent; }
+td.chat-question { background-color: #213243; border: none; padding: 10px 7px 0; }
+td.chat-answer { background-color: #101824; border: none; }
 .chat-speaker { color: #66ddda; }
 a.chat-note-action { color: #66ddda; background-color: #294251; text-decoration: none; }
 th { background-color: #213243; }
@@ -246,6 +275,18 @@ QWidget#PanelHeader { background: #101824; border-bottom: 1px solid #263345; }
 QWidget#ResearchWorkbench { background: #0e1520; border: 1px solid #263345; border-radius: 12px; }
 QScrollArea#ResearchDiscussionScroll, QWidget#ResearchDiscussionPanel { border: 0; background: transparent; }
 QGraphicsView#ResearchMindmapCanvas { border: 1px solid #263345; border-radius: 8px; }
+QLabel#ResearchQuestionBubble { background: #263345; border-radius: 10px; padding: 9px 13px; }
+QLabel#ResearchAgentAvatar { background: #17313c; border-radius: 9px; }
+QFrame#ResearchResultCard, QFrame#ResearchPlainReply { background: #162130; border: 1px solid #263345; border-radius: 10px; }
+QFrame#ResearchHistoryRow, QFrame#ResearchHistoryActive { background: #162130; border: 1px solid #364458; border-radius: 9px; }
+QFrame#ResearchHistoryActive, QFrame#ResearchHistoryRow:hover { border-color: #66ddda; }
+QLabel#ResearchHistoryMarker { color: #66ddda; border: 1px solid #3c7180; border-radius: 12px; }
+QPushButton#BrandMark { background: transparent; border: 0; padding: 0; }
+QScrollArea#ReadingHome { border: 0; }
+QWidget#ReadingHomeBody { background-color: #0b1019; }
+QLabel#ReadingHomeImportLabel { color: #092426; font-weight: 600; background: transparent; }
+QLabel#ReadingHomeTitle { font-size: 27px; font-weight: bold; }
+QPushButton#ReadingHomeRecent { min-height: 38px; padding: 0; border: 1px solid #344b60; border-radius: 7px; }
 QLabel#ResearchOverviewTitle { font-size: 16px; font-weight: bold; }
 QLabel#ResearchOverviewAccent { color: #66ddda; }
 QLabel#ResearchOverviewMuted { color: #a6b8ce; }
@@ -278,6 +319,7 @@ QLabel#ResearchTaskSubtitle { color: #a6b8ce; font-size: 12px; padding: 3px 0; }
 QWidget#ResearchTimeline, QScrollArea#TraceScroll, QScrollArea#TraceScroll > QWidget > QWidget { border: 0; background: transparent; }
 QFrame#TraceRunHeader, QFrame#TraceEvent, QFrame#TraceEventActive { background: #101824; border: 1px solid #263345; border-radius: 10px; }
 QFrame#TraceEventActive { border-color: #66ddda; }
+QFrame#TraceEvent:hover, QFrame#TraceEventActive:hover { background: #17313c; border-color: #66ddda; }
 QLabel#TraceTitle { color: #eaf4ff; font-weight: 600; }
 QLabel#TraceMuted { color: #a6b8ce; font-size: 12px; }
 QLabel#TraceStatus { color: #66ddda; font-weight: 600; }
@@ -313,7 +355,9 @@ QFrame#AnalysisOutline { background: #101824; border: 1px solid #34475b; border-
 QListWidget#AnalysisOutlineList::item { padding: 7px 8px; margin: 1px 0; }
 QPushButton#QuestionMarker { background: transparent; color: #66ddda; border: none; padding: 0; min-height: 0; font-size: 18px; }
 QPushButton#QuestionMarker:hover { background: #294251; }
-QPushButton#NavButton { padding: 3px 8px; min-height: 18px; }
+QPushButton#PdfLayoutButton { padding: 2px 5px; min-height: 20px; }
+QPushButton#PdfLayoutButton:checked { background: #203849; border-color: #66ddda; }
+QPushButton#NavButton, QLineEdit#PdfNumberInput { padding: 3px 8px; min-height: 18px; max-height: 18px; }
 QPushButton#AddPaperGroup { padding: 0; min-height: 36px; max-height: 36px; font-size: 20px; font-weight: 500; }
 QPushButton#Danger { color: #efb0b3; }
 QPushButton:focus, QLineEdit:focus, QTextEdit:focus { border-color: #66ddda; }
@@ -333,6 +377,7 @@ QTabBar::tab { background: transparent; color: #93a4ba; padding: 11px 12px; bord
 QTabBar::tab:selected { color: #66ddda; border-bottom-color: #66ddda; }
 QTabBar::tab:hover { background: #172536; }
 QTextBrowser { background: #101824; border: none; padding: 12px; selection-background-color: #305663; selection-color: #ffffff; }
+QTextBrowser#PaperChat { padding-left: 6px; padding-right: 6px; }
 QTextEdit { background: #111c2a; border: 1px solid #2e4056; border-radius: 6px; padding: 10px; selection-background-color: #305663; }
 QWidget#ComposerFooter { background: #111c2a; }
 QComboBox { background: #172736; color: #c5d9e2; border: 1px solid #344b60; border-radius: 5px; padding: 6px 36px 6px 10px; min-height: 20px; }
@@ -349,6 +394,8 @@ QComboBox#AnalysisMode::drop-down { background: transparent; border: none; width
 QComboBox#AnalysisMode::down-arrow { image: url("__ANALYSIS_ARROW__"); width: 12px; height: 12px; }
 QComboBox#AnalysisMode QAbstractItemView { border: 1px solid #2b4053; }
 QComboBox#AnalysisMode QAbstractItemView::item { padding: 4px 8px 4px 5px; }
+QComboBox#ResearchModelPicker { combobox-popup: 0; }
+QComboBox#ResearchModelPicker QAbstractItemView::item { min-height: 22px; padding: 4px 8px; }
 QComboBox#ThemePicker { combobox-popup: 0; background: #121d2a; border-color: #2b4053; min-height: 24px; }
 QComboBox#ThemePicker:hover, QComboBox#ThemePicker:focus { border-color: #4a6379; }
 QComboBox#ThemePicker::drop-down { background: transparent; border: none; }

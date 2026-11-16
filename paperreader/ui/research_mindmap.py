@@ -36,9 +36,18 @@ class MindmapCanvas(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setObjectName("ResearchMindmapCanvas")
         self.setAccessibleName("完整思维脑图")
+        self.scene().setBackgroundBrush(QColor(theme_color("#101824")))
         self.root = None
         self.collapsed = set()
         self.pressed_node = None
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.StyleChange and hasattr(self, "root"):
+            center = self.mapToScene(self.viewport().rect().center())
+            self.rebuild()
+            if self.root:
+                self.centerOn(center)
 
     def set_mindmap(self, root):
         if root is self.root:

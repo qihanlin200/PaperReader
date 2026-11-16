@@ -157,12 +157,12 @@ class EvidenceOverview(OverviewCard):
         self.open_detail = open_detail
         self.open_matrix = open_matrix
 
-    def set_evidence(self, index, sources):
+    def set_evidence(self, index, sources, *, awaiting_evidence=False):
         entries = [(source["title"], " ".join(source["text"].split())) for source in sources[:3]]
-        if not self.replace((index, entries, len(sources))):
+        if not self.replace((index, entries, len(sources), awaiting_evidence)):
             return
         if not entries:
-            self.add(label("等待取证", "ResearchOverviewMuted"))
+            self.add(label("等待取证" if awaiting_evidence else "本轮未找到可引用的证据", "ResearchOverviewMuted", wrap=True))
             return
         for number, (title, excerpt) in enumerate(entries, 1):
             self.add(divider())
@@ -172,7 +172,9 @@ class EvidenceOverview(OverviewCard):
             layout.setContentsMargins(0, 0, 0, 0)
             layout.addWidget(label("●", "ResearchOverviewAccent"), 0, Qt.AlignmentFlag.AlignTop)
             summary = excerpt[:96] + ("…" if len(excerpt) > 96 else "")
-            layout.addWidget(label(summary or title, wrap=True), 1)
+            excerpt_label = label(summary or title, wrap=True)
+            layout.addWidget(excerpt_label, 1)
+            card.setMinimumHeight(excerpt_label.fontMetrics().lineSpacing() + 8)
             self.add(card)
         self.add(divider())
         footer = clickable("ResearchEvidencePoint", "查看引用矩阵", self.open_matrix)

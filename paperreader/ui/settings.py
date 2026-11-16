@@ -21,7 +21,6 @@ from paperreader.services.profiles import (
 )
 from paperreader.services.themes import THEMES
 from paperreader.ui.markdown import MarkdownBrowser
-from paperreader.ui.theme import ThemeSwitch
 
 
 class SettingsDialog(QDialog):
@@ -51,7 +50,7 @@ def open_settings(window):
     navigation = QListWidget()
     navigation.setObjectName("SettingsNavigation")
     navigation.setFixedWidth(152)
-    navigation.addItems(["常规设置", "模型设置"])
+    navigation.addItems(["常规设置", "模型设置", "搜索 API"])
     layout.addWidget(navigation)
     pages = QStackedWidget()
     layout.addWidget(pages, 1)
@@ -73,15 +72,7 @@ def open_settings(window):
     theme_view.setMinimumHeight(rows_height + 2 * theme_view.frameWidth())
     theme_picker.setCurrentIndex(theme_picker.findData(window.profile_config["theme"]))
     appearance.addRow("界面主题", theme_picker)
-    pdf_follow = ThemeSwitch("跟随界面主题")
-    pdf_follow.setObjectName("PdfFollowTheme")
-    pdf_follow.setChecked(window.profile_config["pdf_follow_theme"])
-    pdf_follow.setToolTip("关闭后，PDF 页面始终显示白底黑字。")
-    appearance.addRow("论文背景", pdf_follow)
     general_layout.addLayout(appearance)
-    hint = QLabel("关闭论文背景跟随主题后，PDF 始终显示白底黑字。设置即时生效并保存在本机。")
-    hint.setObjectName("Muted")
-    general_layout.addWidget(hint)
     general_layout.addStretch()
     close = QPushButton("关闭")
     close.clicked.connect(dialog.reject)
@@ -92,6 +83,44 @@ def open_settings(window):
     model_layout = QVBoxLayout(models)
     model_layout.addWidget(settings_heading("模型设置"))
     pages.addWidget(models)
+
+    from paperreader.research_agent.search import SEARCH_ACCOUNTS, search_key
+
+    search = QWidget()
+    search_layout = QVBoxLayout(search)
+    search_layout.addWidget(settings_heading("搜索 API"))
+    search_form = QFormLayout()
+    search_layout.addLayout(search_form)
+    for provider, account in SEARCH_ACCOUNTS.items():
+        field = QLineEdit(search_key(provider))
+        field.setEchoMode(QLineEdit.EchoMode.Password)
+        save_key = QPushButton("保存")
+        row = QHBoxLayout()
+        row.addWidget(field, 1)
+        row.addWidget(save_key)
+        search_form.addRow(provider + " API Key", row)
+
+        def save_search_key(checked=False, field=field, account=account):
+            try:
+                secret = field.text().strip()
+                if secret:
+                    keyring.set_password("PaperReader", account, secret)
+                else:
+                    try:
+                        keyring.delete_password("PaperReader", account)
+                    except keyring.errors.PasswordDeleteError:
+                        pass
+                window.statusBar().showMessage("搜索 API 设置已保存", 3000)
+            except keyring.errors.KeyringError:
+                window.error("无法保存搜索 API Key，请检查系统密钥环。")
+
+        save_key.clicked.connect(save_search_key)
+    search_layout.addWidget(QLabel("Brave 用于网页搜索，OpenAlex 用于论文发现。清空密钥后保存可移除配置。"))
+    search_layout.addStretch()
+    close_search = QPushButton("关闭")
+    close_search.clicked.connect(dialog.reject)
+    search_layout.addWidget(close_search, alignment=Qt.AlignmentFlag.AlignRight)
+    pages.addWidget(search)
 
     save_model = None
 
@@ -115,13 +144,7 @@ def open_settings(window):
             with QSignalBlocker(theme_picker):
                 theme_picker.setCurrentIndex(theme_picker.findData(window.profile_config["theme"]))
 
-    def choose_pdf_follow(enabled):
-        if not window.change_pdf_follow_theme(enabled):
-            with QSignalBlocker(pdf_follow):
-                pdf_follow.setChecked(window.profile_config["pdf_follow_theme"])
-
     theme_picker.currentIndexChanged.connect(choose_theme)
-    pdf_follow.toggled.connect(choose_pdf_follow)
     navigation.currentRowChanged.connect(show_page)
     navigation.setCurrentRow(0)
     if dialog.exec() and save_model:
@@ -157,10 +180,6 @@ def build_model_settings(window, dialog, form, job_type):
     limit.setValue(input_limit(window.config)); limit.setSuffix(" 字符")
     form.addRow("最大输入长度", limit)
     form.addRow(QLabel("按请求全部文本字符计（含提示词和历史），不是 Token；请低于服务商上下文上限并预留输出空间。"))
-    form.addRow(QLabel("使用 Chat Completions 兼容接口；模型请求可能发送论文文本。"))
-    http_hint = QLabel("内网模型可填写 http:// 地址；HTTP 会明文传输论文文本和已配置的 API Key。")
-    http_hint.setWordWrap(True)
-    form.addRow(http_hint)
     buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
     buttons.accepted.connect(dialog.accept); buttons.rejected.connect(dialog.reject)
     import_button = QPushButton("导入配置"); import_button.setObjectName("ImportModelConfig")
