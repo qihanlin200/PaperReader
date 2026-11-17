@@ -492,13 +492,18 @@ class ResearchWorkspace(QWidget):
         self.models.setMaximumWidth(220)
         self.refresh_models()
         self.composer.footer_layout.addWidget(self.models)
-        self.academic = QPushButton("深度检索")
+        self.academic = QPushButton("论文检索")
         self.academic.setObjectName("ResearchSearchToggle")
         self.academic.setCheckable(True)
-        self.academic.setToolTip("允许按问题需要使用已配置的网页或学术检索服务。")
+        self.academic.setToolTip("检索 OpenAlex 和 Crossref 论文资料。")
         self.composer.footer_layout.addWidget(self.academic)
+        self.web_search = QPushButton("网页搜索")
+        self.web_search.setObjectName("ResearchSearchToggle")
+        self.web_search.setCheckable(True)
+        self.web_search.setToolTip("使用 Bright Data 搜索网页，先读取前 5 页；有效原文不足 3 条时扩展到前 10 页。")
+        self.composer.footer_layout.addWidget(self.web_search)
         self.composer.footer_layout.addStretch()
-        for control in (self.models, self.academic, self.send):
+        for control in (self.models, self.academic, self.web_search, self.send):
             control.setFixedHeight(28)
         self.composer.footer_layout.addWidget(self.send)
         work.addWidget(self.composer)
@@ -744,7 +749,7 @@ class ResearchWorkspace(QWidget):
             return
         if self.visible_space is space:
             self.composer.clear()
-            self.evidence_matrix.set_entries([])
+            self.evidence_matrix.set_groups([])
             self.full_map_canvas.set_mindmap(None)
             self.switch_space()
         self.drafts.pop(space["id"], None)
@@ -964,7 +969,9 @@ class ResearchWorkspace(QWidget):
             self.window.error("请在系统设置中配置研究使用的模型。")
             return
         plan = old["plan"] if old else ""
-        academic = old.get("academic", False) if old else self.academic.isChecked()
+        paper_search = (old.get("paper_search", old.get("academic", False))
+                        if old else self.academic.isChecked())
+        web_search = old.get("web_search", False) if old else self.web_search.isChecked()
         try:
             key = keyring.get_password("PaperReader", config.get("key_account", "api")) or ""
         except Exception:
@@ -993,7 +1000,10 @@ class ResearchWorkspace(QWidget):
         run = dict(workflow=workflow, id=uuid4().hex, question=question, plan=plan, query=f"{question}\n{plan}",
                    history=history, sources=identifiers, status="运行中", answer="",
                    evidence=deepcopy(old["evidence"]) if reuse else [], scanned=old["scanned"] if reuse else 0,
-                   academic=academic, academic_done=bool(reuse and old.get("academic_done")),
+                   academic=paper_search or web_search, paper_search=paper_search, web_search=web_search,
+                   search_engine=(old.get("search_engine", "bing") if old else
+                                  self.window.profile_config.get("brightdata_engine", "bing")),
+                   academic_done=bool(reuse and old.get("academic_done")),
                    trace=[], parent=old["id"] if old else None)
         self.append_trace(run, "开始处理提问")
         space["runs"].append(run)
@@ -1252,7 +1262,73 @@ class ResearchWorkspace(QWidget):
     @staticmethod
     def is_research(run):
         state = run.get("workflow") or {}
+        if "presentation_skill" in state:
+            return state["presentation_skill"] == "research_card"
         return state.get("mode") == "research" or bool(state.get("tasks"))
+
+    @staticmethod
+    def evidence_groups(space):
+        """Show newest runs first, with their saved workflow subtasks beneath them."""
+        groups = []
+        runs = space.get("runs", []) if space else []
+
+        def run_order(item):
+            index, run = item
+            trace = run.get("trace") or []
+            started = trace[0][0] if trace and isinstance(trace[0], (list, tuple)) and trace[0] else ""
+            try:
+                return (1, datetime.fromisoformat(started).timestamp(), index)
+            except (TypeError, ValueError, OverflowError):
+                return (0, index, index)
+
+        for run_index, run in sorted(enumerate(runs), key=run_order, reverse=True):
+            evidence = run.get("evidence") or []
+            tasks = (run.get("workflow") or {}).get("tasks") or []
+            claimed = set()
+            question = " ".join(run.get("question", "").split())
+            trace = run.get("trace") or []
+            started = trace[0][0] if trace and isinstance(trace[0], (list, tuple)) and trace[0] else ""
+            timestamp = started.replace("T", " ")[:16] if isinstance(started, str) else ""
+
+            def entry(number):
+                source = evidence[number - 1]
+                kind = source.get("kind", "text")
+                title = f"E{number} · {source.get('title') or '未命名来源'}"
+                return (title, source.get("text", "")[:180], position(source),
+                        f"research-content:{run_index}-{number}", kind)
+
+            subtasks = []
+            for task_index in range(len(tasks) - 1, -1, -1):
+                task = tasks[task_index]
+                refs = []
+                for value in task.get("refs") or []:
+                    number = int(value) if isinstance(value, str) and value.isdecimal() else value
+                    if type(number) is int and 1 <= number <= len(evidence) and number not in refs:
+                        refs.append(number)
+                        claimed.add(number)
+                entries = [entry(number) for number in sorted(refs, reverse=True)]
+                title = task.get("title") or task.get("question") or "未命名任务"
+                subtasks.append({"key": (run_index, task_index),
+                                 "title": f"子任务 {task_index + 1} · {title}",
+                                 "status": task.get("status", ""),
+                                 "subtask_number": task_index + 1,
+                                 "entries": entries})
+
+            remaining = [number for number in range(len(evidence), 0, -1) if number not in claimed]
+            if remaining:
+                label = "未归入任务" if tasks else "直接回答"
+                subtasks.append({"key": (run_index, "unassigned"), "title": label,
+                                 "status": "", "subtask_number": None,
+                                 "entries": [entry(number) for number in remaining]})
+            groups.append({"key": run.get("id") or ("run", run_index),
+                           "title": f"任务 {run_index + 1} · {question[:72] or '未命名任务'}",
+                           "subtitle": " · ".join(part for part in
+                                                  (timestamp, f"{len(tasks)} 个子任务",
+                                                   f"{len(evidence)} 条引用") if part),
+                           "status": run.get("status", ""),
+                           "task_number": run_index + 1,
+                           "subtasks": subtasks})
+        return groups
 
     def toggle_turn(self, identifier):
         self.expanded_turn = None if self.expanded_turn == identifier else identifier
@@ -1368,7 +1444,7 @@ class ResearchWorkspace(QWidget):
                     sections = self.answer_card_markup(answer_cards(answer)) if completed and not semantic else ""
                     markup = sections or markdown_html(answer, {}, {}, renderer=None)
                     markup = CITATION.sub(
-                        lambda match: link(match[0], f"research-content:{index}-{match[1]}"), markup)
+                        lambda match: self.citation_html(index, int(match[1]), match[0]), markup)
                     reply.setText(markup)
                     reply.answer_snapshot = snapshot
                     card.has_answer_cards = bool(sections or semantic)
@@ -1401,7 +1477,7 @@ class ResearchWorkspace(QWidget):
         blocks = payload.get("blocks")
         layout = payload.get("layout")
         if (not isinstance(blocks, list) or not all(isinstance(block, str) for block in blocks)
-                or not validate_layout(layout, len(blocks))):
+                or not validate_layout(layout, len(blocks), blocks)):
             return False
         final_body, closing = split_closing_summary(blocks[-1])
         blocks = [*blocks[:-1], final_body]
@@ -1416,37 +1492,60 @@ class ResearchWorkspace(QWidget):
             label.linkActivated.connect(lambda url: self.open_detail(QUrl(url)))
             markup = markdown_html(markdown, {}, {}, renderer=None)
             label.setText(CITATION.sub(
-                lambda match: (
-                    f'<a style="color:#793516" href="research-content:{index}-{match[1]}">{match[0]}</a>'
-                    if scroll_style else link(match[0], f"research-content:{index}-{match[1]}")
-                ), markup))
+                lambda match: self.citation_html(index, int(match[1]), match[0],
+                                                 scroll_style=scroll_style), markup))
             label.installEventFilter(scroll_area)
             return label
 
         for group in layout["groups"]:
             component = group["component"]
+            if component == "Divider":
+                separator = QFrame()
+                separator.setObjectName("ResearchLayoutDivider")
+                separator.setFixedHeight(1)
+                target.addWidget(separator)
+                continue
             container = QTabWidget() if component == "Tabs" else QWidget()
             if component != "Tabs":
                 horizontal = component == "Row" and scroll_area.viewport().width() >= 680
                 children = QHBoxLayout(container) if horizontal else QVBoxLayout(container)
                 children.setContentsMargins(0, 0, 0, 0)
+                children.setSpacing(8)
             for number, item in enumerate(group["items"], 1):
                 scroll_style = current_theme() == "naruto" and payload.get("text_component", "Text") in (
                     "Text", "ScrollText")
-                panel = ScrollTextCard() if scroll_style else QFrame()
-                panel.setObjectName("ScrollTextCard" if scroll_style else "ResearchResultCard")
+                bare_text = component == "Text" and not scroll_style
+                panel = (QWidget() if bare_text else
+                         ScrollTextCard() if scroll_style else QFrame())
+                panel.setObjectName(
+                    "ResearchLayoutText" if bare_text else
+                    "ScrollTextCard" if scroll_style else
+                    "ResearchLayoutCallout" if component == "Callout" else
+                    "ResearchLayoutEvidence" if component == "Evidence" else
+                    "ResearchLayoutTable" if component == "Table" else
+                    "ResearchResultCard")
+                panel.setProperty("layoutComponent", component)
                 body = QVBoxLayout(panel)
                 body.setAlignment(Qt.AlignmentFlag.AlignTop)
                 if scroll_style:
                     body.setContentsMargins(22, 15, 22, 15)
+                elif bare_text:
+                    body.setContentsMargins(4, 4, 4, 4)
                 title = item["title"]
                 markdown = "\n\n".join(blocks[block] for block in item["blocks"])
+                cited_sources = sorted(set(re.findall(r"【E\d+】", markdown)))
                 original_heading = re.match(r"^ {0,3}#{1,6}[ \t]+([^\n]+)\n*", markdown)
                 if original_heading:
-                    title = original_heading[1].strip()
+                    title = title.strip() or original_heading[1].strip()
                     markdown = markdown[original_heading.end():]
-                if component != "Tabs" and (title or component == "List"):
-                    heading_label = heading(f"{number}. {title}" if component == "List" and not original_heading else title)
+                if component == "Evidence":
+                    source_label = QLabel("证据来源 " + " ".join(cited_sources))
+                    source_label.setObjectName("ResearchLayoutSource")
+                    source_label.setWordWrap(True)
+                    body.addWidget(source_label)
+                if component != "Tabs" and (title or component in ("List", "Timeline")):
+                    prefix = f"{number}. " if component in ("List", "Timeline") and not original_heading else ""
+                    heading_label = heading(prefix + title)
                     heading_label.setTextFormat(Qt.TextFormat.PlainText)
                     heading_label.setWordWrap(True)
                     heading_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
@@ -1454,6 +1553,17 @@ class ResearchWorkspace(QWidget):
                 body.addWidget(render_text(markdown, scroll_style=scroll_style))
                 if component == "Tabs":
                     container.addTab(panel, title or str(number))
+                elif component == "Timeline":
+                    stage = QWidget()
+                    stage_row = QHBoxLayout(stage)
+                    stage_row.setContentsMargins(0, 0, 0, 0)
+                    marker = QLabel(str(number))
+                    marker.setObjectName("ResearchLayoutStage")
+                    marker.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    marker.setFixedSize(26, 26)
+                    stage_row.addWidget(marker, 0, Qt.AlignmentFlag.AlignTop)
+                    stage_row.addWidget(panel, 1)
+                    children.addWidget(stage)
                 else:
                     children.addWidget(panel, 1)
             target.addWidget(container)
@@ -1554,12 +1664,7 @@ class ResearchWorkspace(QWidget):
             self.render_discussion(space)
             return
         if tab == 1:
-            self.evidence_matrix.set_entries([
-                (f"E{number} · {source['title']}", source["text"][:180], position(source),
-                 f"research-content:{index}-{number}")
-                for index, run in enumerate(space["runs"] if space else [])
-                for number, source in enumerate(run["evidence"], 1)
-            ])
+            self.evidence_matrix.set_groups(self.evidence_groups(space))
             return
         if tab == 4:
             self.chat.set_runs(space["runs"] if space else [])
@@ -1592,7 +1697,7 @@ class ResearchWorkspace(QWidget):
                     cached = self.conclusion_cache.get(key)
                     if not cached or cached[0] != run["answer"]:
                         answer = CITATION.sub(
-                            lambda match: f"[{match[0]}](research-content:{index}-{match[1]})", run["answer"])
+                            lambda match: self.citation_markdown(index, int(match[1]), match[0]), run["answer"])
                         answer = conclusion_markdown(answer)
                         self.conclusion_cache[key] = (run["answer"], answer)
                     else:
@@ -1604,10 +1709,37 @@ class ResearchWorkspace(QWidget):
         self.conclusions.show()
         self.conclusions.show_cards(blocks, "暂无最终结论。研究总结完成后将在这里显示。")
 
+    def citation_href(self, index, number):
+        return f"research-content:{index}-{number}"
+
+    def web_citation_href(self, index, number):
+        space = self.selected()
+        if space and 0 <= index < len(space["runs"]):
+            evidence = space["runs"][index].get("evidence", [])
+            if 0 < number <= len(evidence) and evidence[number - 1]["kind"] == "web":
+                target = QUrl(evidence[number - 1].get("url", ""))
+                if target.scheme() in ("http", "https") and target.host():
+                    return f"research-web:{index}-{number}"
+        return ""
+
+    def citation_html(self, index, number, label, *, scroll_style=False):
+        href = self.citation_href(index, number)
+        external = self.web_citation_href(index, number)
+        if scroll_style:
+            primary = f'<a style="color:#793516" href="{href}">{label}</a>'
+            return primary + (f' <a style="color:#793516" href="{external}">↗</a>' if external else "")
+        return link(label, href) + (" " + link("↗", external) if external else "")
+
+    def citation_markdown(self, index, number, label):
+        primary = f"[{label}]({self.citation_href(index, number)})"
+        external = self.web_citation_href(index, number)
+        return primary + (f" [↗]({external})" if external else "")
+
     def open_detail(self, url):
         scheme = url.scheme()
         if scheme not in ("research-content", "research-trace", "research-export",
-                          "research-resume", "research-subtask", "research-conclusion", "research-answer", "research-map"):
+                          "research-resume", "research-subtask", "research-conclusion", "research-answer", "research-map",
+                          "research-web"):
             return
         index, _, reference = url.path().partition("-")
         space = self.selected()
@@ -1615,6 +1747,14 @@ class ResearchWorkspace(QWidget):
             return
         index = int(index)
         run = space["runs"][index]
+        if scheme == "research-web":
+            evidence = run.get("evidence", [])
+            number = int(reference) if reference.isdigit() else 0
+            if 0 < number <= len(evidence) and evidence[number - 1]["kind"] == "web":
+                target = QUrl(evidence[number - 1].get("url", ""))
+                if target.scheme() in ("http", "https") and target.host():
+                    QDesktopServices.openUrl(target)
+            return
         if scheme == "research-map":
             self.map_turn = run["id"]
             self.work_tabs.setCurrentIndex(2)
@@ -1750,7 +1890,7 @@ class ResearchWorkspace(QWidget):
             return
         if subtask == "answer":
             index = self.selected()["runs"].index(run)
-            answer = CITATION.sub(lambda match: f"[{match[0]}](research-content:{index}-{match[1]})", run["answer"])
+            answer = CITATION.sub(lambda match: self.citation_markdown(index, int(match[1]), match[0]), run["answer"])
             self.content.show_cards([("研究 Agent", answer, True, run["status"], "", True)])
             return
         if subtask is not None:
@@ -1790,13 +1930,13 @@ class ResearchWorkspace(QWidget):
             return
         task = run["workflow"]["tasks"][subtask]
         index = self.selected()["runs"].index(run)
-        answer = CITATION.sub(lambda match: f"[{match[0]}](research-content:{index}-{match[1]})", task["answer"])
+        answer = CITATION.sub(lambda match: self.citation_markdown(index, int(match[1]), match[0]), task["answer"])
         answer = conclusion_markdown(answer)
         self.content.show_cards([(task["title"], answer, True, task["status"], "", True)])
         self.subtask_cache = self.detail_run
 
     def open_pdf(self, url):
-        if url.scheme() == "research-content":
+        if url.scheme() in ("research-content", "research-web"):
             self.open_detail(url)
             return
         scheme = url.scheme()
@@ -1816,7 +1956,7 @@ class ResearchWorkspace(QWidget):
         elif source["kind"] in ("academic", "web"):
             if scheme == "research-browser":
                 target = QUrl(source["url"])
-                if target.scheme() == "https" and target.host():
+                if target.scheme() in ("http", "https") and target.host():
                     QDesktopServices.openUrl(target)
             elif scheme == "research-download":
                 self.begin_download(source)

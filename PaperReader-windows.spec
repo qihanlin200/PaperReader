@@ -11,6 +11,8 @@ a = Analysis(
     datas=[
         (str(assets), 'paperreader/assets'),
         (str(root / 'paperreader' / 'themes'), 'paperreader/themes'),
+        (str(root / 'paperreader' / 'research_agent' / 'domain_skills'),
+         'paperreader/research_agent/domain_skills'),
     ],
     hiddenimports=['keyring', 'keyring.backends.Windows', 'fitz', 'httpx', 'PySide6.QtWebEngineWidgets'],
     excludes=['PySide6.QtWebEngineQuick', 'tkinter'],

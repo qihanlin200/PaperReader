@@ -1,0 +1,6 @@
+{
+  "id": "game",
+  "description": "游戏玩法与机制研究：版本、模式、规则、策略及适用情境",
+  "when": "课题主要研究如何玩游戏、游戏机制或具体对局策略；游戏开发与算法研究优先计算机方向",
+  "workflow": {"min_tasks": 1, "max_tasks": 2, "max_supplements": 0, "default_external_source": "web"}
+}

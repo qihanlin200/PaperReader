@@ -27,3 +27,14 @@ QFrame#ScrollTextCard QLabel {
     font-family: "Kaiti SC", "STKaiti", "KaiTi", "Songti SC", serif;
 }
 QFrame#ScrollTextCard QLabel#PanelTitle { color: #342012; }
+QFrame#ScrollTextCard QLabel#ResearchLayoutSource { color: #793516; font-weight: bold; }
+QWidget#SkillLibrary QPlainTextEdit#SkillSystemText {
+    background: #27322e; border: 1px solid #82968c; color: #e0e9e3;
+}
+QPushButton#SkillSystemToggle { background: #27322e; border-color: #82968c; color: #c9ded2; }
+QPushButton#ResearchEvidenceLocal { background: #29372f; border-color: #718d77; }
+QPushButton#ResearchEvidenceLocal:hover, QPushButton#ResearchEvidenceLocal:focus { background: #344638; border-color: #a0b798; }
+QPushButton#ResearchEvidenceWeb { background: #3a2827; border-color: #9e6258; }
+QPushButton#ResearchEvidenceWeb:hover, QPushButton#ResearchEvidenceWeb:focus { background: #4b3330; border-color: #c9856c; }
+QLabel#ResearchEvidenceLocalBadge { background: #3b5747; color: #d6e9d3; }
+QLabel#ResearchEvidenceWebBadge { background: #694039; color: #ffe1cf; }

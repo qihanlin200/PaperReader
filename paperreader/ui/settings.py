@@ -84,21 +84,28 @@ def open_settings(window):
     model_layout.addWidget(settings_heading("模型设置"))
     pages.addWidget(models)
 
-    from paperreader.research_agent.search import SEARCH_ACCOUNTS, search_key
+    from paperreader.research_agent.search import (
+        BRIGHTDATA_ZONE_ACCOUNT, SEARCH_ACCOUNTS, SEARCH_ENGINES, brightdata_zone, search_key,
+    )
 
     search = QWidget()
     search_layout = QVBoxLayout(search)
     search_layout.addWidget(settings_heading("搜索 API"))
     search_form = QFormLayout()
     search_layout.addLayout(search_form)
-    for provider, account in SEARCH_ACCOUNTS.items():
-        field = QLineEdit(search_key(provider))
-        field.setEchoMode(QLineEdit.EchoMode.Password)
+    search_fields = [(provider + " API Key", account, search_key(provider), True)
+                     for provider, account in SEARCH_ACCOUNTS.items()]
+    search_fields.insert(1, ("Bright Data SERP Zone", BRIGHTDATA_ZONE_ACCOUNT,
+                             brightdata_zone(), False))
+    for label, account, value, secret_field in search_fields:
+        field = QLineEdit(value)
+        if secret_field:
+            field.setEchoMode(QLineEdit.EchoMode.Password)
         save_key = QPushButton("保存")
         row = QHBoxLayout()
         row.addWidget(field, 1)
         row.addWidget(save_key)
-        search_form.addRow(provider + " API Key", row)
+        search_form.addRow(label, row)
 
         def save_search_key(checked=False, field=field, account=account):
             try:
@@ -115,7 +122,31 @@ def open_settings(window):
                 window.error("无法保存搜索 API Key，请检查系统密钥环。")
 
         save_key.clicked.connect(save_search_key)
-    search_layout.addWidget(QLabel("Brave 用于网页搜索，OpenAlex 用于论文发现。清空密钥后保存可移除配置。"))
+    engine_picker = QComboBox()
+    engine_picker.setObjectName("BrightDataEnginePicker")
+    for identifier, label in SEARCH_ENGINES.items():
+        engine_picker.addItem(label, identifier)
+    engine_picker.setCurrentIndex(engine_picker.findData(window.profile_config.get("brightdata_engine", "bing")))
+    search_form.addRow("Bright Data 搜索引擎", engine_picker)
+
+    def save_search_engine(index):
+        engine = engine_picker.itemData(index)
+        if engine not in SEARCH_ENGINES:
+            return
+        try:
+            window.library.save_config(dict(window.library.config(), brightdata_engine=engine))
+        except (OSError, ValueError) as exc:
+            window.error("无法保存搜索引擎设置：" + str(exc))
+            with QSignalBlocker(engine_picker):
+                engine_picker.setCurrentIndex(engine_picker.findData(
+                    window.profile_config.get("brightdata_engine", "bing")))
+            return
+        window.profile_config["brightdata_engine"] = engine
+        window.statusBar().showMessage("搜索引擎设置已保存", 3000)
+
+    engine_picker.currentIndexChanged.connect(save_search_engine)
+    search_layout.addWidget(QLabel("Bright Data SERP 用于网页搜索，需配置 API Key 和 SERP Zone；OpenAlex 用于论文发现。"))
+    search_layout.addWidget(QLabel("可选 Google 或 Bing；其他受支持引擎暂不提供研究引用所需的结构化 JSON。"))
     search_layout.addStretch()
     close_search = QPushButton("关闭")
     close_search.clicked.connect(dialog.reject)

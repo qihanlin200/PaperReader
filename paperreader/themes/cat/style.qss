@@ -22,3 +22,9 @@ QTabBar::tab:selected { color: #fff1df; border-bottom-color: #e7b38b; }
 QWidget#SageCard { background: #302219; border-bottom: 1px solid #60452f; }
 QLabel#SageTitle { color: #f5e6d8; font-weight: 700; font-size: 21px; }
 QLabel#SageBadge { color: #dbbfa2; }
+QPushButton#ResearchEvidenceLocal { background: #493626; border-color: #ab7c55; }
+QPushButton#ResearchEvidenceLocal:hover, QPushButton#ResearchEvidenceLocal:focus { background: #5b432e; border-color: #d3a17b; }
+QPushButton#ResearchEvidenceWeb { background: #3d3040; border-color: #9d768e; }
+QPushButton#ResearchEvidenceWeb:hover, QPushButton#ResearchEvidenceWeb:focus { background: #4d3c50; border-color: #c396b6; }
+QLabel#ResearchEvidenceLocalBadge { background: #765038; color: #ffe3cb; }
+QLabel#ResearchEvidenceWebBadge { background: #5d4565; color: #f4dcf0; }

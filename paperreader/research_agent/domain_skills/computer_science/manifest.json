@@ -1,0 +1,6 @@
+{
+  "id": "computer_science",
+  "description": "计算机科学与软件系统研究：算法、模型、系统、工程方法及其评测",
+  "when": "课题主要研究计算机方法、AI、软件、系统或计算实验；普通工具使用问题不必加载",
+  "workflow": {"min_tasks": 2, "max_tasks": 3, "max_supplements": 1, "default_external_source": "academic"}
+}

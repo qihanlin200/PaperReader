@@ -17,7 +17,7 @@ def draw_symbol(painter, symbol, color):
             draw_naruto_topic(painter)
             return
         symbol = "folder"
-    if current_theme() == "naruto" and symbol in ("paper", "library", "research", "settings"):
+    if current_theme() == "naruto" and symbol in ("paper", "library", "research", "skills", "settings"):
         draw_naruto_symbol(painter, symbol)
         return
     if symbol in ("pages-1", "pages-2", "pages-3"):
@@ -66,6 +66,15 @@ def draw_symbol(painter, symbol, color):
         book.closeSubpath()
         painter.drawPath(book)
         painter.drawLine(13, 6, 13, 22)
+    elif symbol == 'skills':
+        page = QPainterPath(QPointF(7, 2))
+        page.lineTo(18, 2); page.lineTo(22, 6); page.lineTo(22, 24)
+        page.lineTo(7, 24); page.closeSubpath()
+        page.moveTo(18, 2); page.lineTo(18, 6); page.lineTo(22, 6)
+        painter.drawPath(page)
+        painter.drawLine(11, 10, 18, 10)
+        painter.drawLine(12, 14, 10, 17); painter.drawLine(10, 17, 12, 20)
+        painter.drawLine(17, 14, 19, 17); painter.drawLine(19, 17, 17, 20)
     elif symbol == 'folder':
         folder = QPainterPath(QPointF(2, 7))
         folder.lineTo(10, 7); folder.lineTo(13, 10); folder.lineTo(24, 10)
@@ -180,8 +189,8 @@ def draw_symbol(painter, symbol, color):
 
 
 def draw_naruto_symbol(painter, symbol):
-    path = QPainterPath()
     if symbol == "paper":
+        # Reading: a rolled mission scroll.
         painter.save()
         painter.translate(13, 13)
         painter.rotate(-42)
@@ -192,29 +201,48 @@ def draw_naruto_symbol(painter, symbol):
         painter.drawLine(0, 5, 3, 8)
         painter.restore()
     elif symbol == "library":
-        for x in (2, 20):
-            painter.drawRoundedRect(QRectF(x, 4, 4, 18), 2, 2)
-        painter.drawLine(6, 6, 20, 6)
-        painter.drawLine(6, 20, 20, 20)
-        painter.drawLine(9, 11, 17, 11)
-        painter.drawLine(9, 15, 17, 15)
+        # Library: the Leaf Village forehead protector.
+        painter.drawRoundedRect(QRectF(2, 7, 22, 13), 3, 3)
+        painter.drawLine(5, 7, 5, 20); painter.drawLine(21, 7, 21, 20)
+        leaf = QPainterPath(QPointF(8, 14))
+        leaf.cubicTo(10, 10, 16, 10, 18, 13)
+        leaf.cubicTo(19, 16, 15, 18, 12, 16)
+        leaf.cubicTo(10, 14, 13, 12, 15, 14)
+        painter.drawPath(leaf)
+        painter.drawLine(8, 14, 6, 17)
     elif symbol == "research":
-        painter.drawEllipse(QRectF(2, 2, 17, 17))
-        painter.drawLine(17, 17, 24, 24)
-        path.moveTo(15, 7)
-        path.cubicTo(8, 4, 5, 12, 9, 14)
-        path.cubicTo(13, 16, 16, 10, 11, 10)
-        path.moveTo(7, 10)
-        path.lineTo(5, 14)
-        path.lineTo(10, 14)
-    else:
-        path.moveTo(13, 2)
-        path.quadTo(16, 10, 24, 13)
-        path.quadTo(16, 16, 13, 24)
-        path.quadTo(10, 16, 2, 13)
-        path.quadTo(10, 10, 13, 2)
-        painter.drawEllipse(QRectF(10, 10, 6, 6))
-    painter.drawPath(path)
+        # Research: an eye with three distinct Sharingan marks.
+        eye = QPainterPath(QPointF(2, 13))
+        eye.quadTo(13, 2, 24, 13)
+        eye.quadTo(13, 24, 2, 13)
+        painter.drawPath(eye)
+        painter.drawEllipse(QRectF(8, 8, 10, 10))
+        painter.drawEllipse(QRectF(11, 11, 4, 4))
+        for x, y in ((13, 9), (9, 16), (18, 16)):
+            painter.drawEllipse(QRectF(x - 0.8, y - 0.8, 1.6, 1.6))
+    elif symbol == "skills":
+        # Skill creation: paired fingers forming a hand seal.
+        seal = QPainterPath(QPointF(7, 23))
+        seal.lineTo(7, 10); seal.quadTo(7, 8, 9, 8)
+        seal.quadTo(11, 8, 11, 10); seal.lineTo(11, 3)
+        seal.quadTo(11, 1, 13, 1); seal.quadTo(15, 1, 15, 3)
+        seal.lineTo(15, 10); seal.quadTo(15, 8, 17, 8)
+        seal.quadTo(19, 8, 19, 10); seal.lineTo(19, 23)
+        painter.drawPath(seal)
+        painter.drawLine(7, 17, 19, 17)
+        painter.drawLine(7, 21, 19, 21)
+        painter.drawLine(4, 12, 7, 15); painter.drawLine(22, 12, 19, 15)
+    elif symbol == "settings":
+        # Settings: a kunai, the distinct ninja tool for configuration.
+        painter.drawEllipse(QRectF(2, 2, 7, 7))
+        painter.drawLine(8, 8, 13, 13)
+        painter.drawLine(10, 10, 8, 12)
+        painter.drawLine(12, 12, 10, 14)
+        blade = QPainterPath(QPointF(13, 13))
+        blade.lineTo(23, 11); blade.lineTo(20, 21)
+        blade.lineTo(13, 13)
+        painter.drawPath(blade)
+        painter.drawLine(13, 13, 19, 17)
 
 
 def draw_naruto_topic(painter):

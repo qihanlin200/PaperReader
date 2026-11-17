@@ -1,0 +1,6 @@
+{
+  "id": "medicine",
+  "description": "医学与生命科学研究：临床问题、干预、诊断、预后及证据质量",
+  "when": "课题主要讨论医学研究、临床证据或生物医学结论；一般生活建议不必加载",
+  "workflow": {"min_tasks": 2, "max_tasks": 3, "max_supplements": 2, "default_external_source": "academic"}
+}

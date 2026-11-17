@@ -83,6 +83,9 @@ class Window(QMainWindow):
         saved_config = self.library.config()
         self.profile_config = normalize_profiles(saved_config)
         self.profile_config["theme"] = get_theme(saved_config.get("theme")).identifier
+        from paperreader.research_agent.search import SEARCH_ENGINES
+        engine = saved_config.get("brightdata_engine", "bing")
+        self.profile_config["brightdata_engine"] = engine if engine in SEARCH_ENGINES else "bing"
         apply_theme(self.profile_config["theme"])
         self.setWindowIcon(QApplication.instance().windowIcon())
         self.config = active_profile(self.profile_config)
@@ -138,7 +141,11 @@ class Window(QMainWindow):
         self.research_rail_button = WorkRailButton("research", "研究模式")
         self.research_rail_button.clicked.connect(self.toggle_research)
         rail_layout.addWidget(self.research_rail_button)
+        self.skills_rail_button = WorkRailButton("skills", "技能库")
+        self.skills_rail_button.clicked.connect(self.toggle_skills)
+        rail_layout.addWidget(self.skills_rail_button)
         self.research_workspace = None
+        self.skill_library = None
         rail_layout.addStretch()
         self.settings_rail_button = WorkRailButton("settings", "系统设置")
         self.settings_rail_button.clicked.connect(self.settings)
@@ -537,8 +544,12 @@ class Window(QMainWindow):
         self.reload(current, reopen=False, refresh_metadata=False)
 
     def toggle_research(self):
-        if self.workspace_stack.currentIndex():
+        if self.workspace_stack.currentWidget() is self.research_workspace and self.research_workspace is not None:
             self.show_reader()
+            return
+        if (self.skill_library is not None and
+                self.workspace_stack.currentWidget() is self.skill_library and
+                not self.skill_library.confirm_leave()):
             return
         if self.research_workspace is None:
             from paperreader.ui.research import ResearchWorkspace
@@ -550,13 +561,36 @@ class Window(QMainWindow):
             self.workspace_stack.addWidget(self.research_workspace)
         self.workspace_stack.setCurrentWidget(self.research_workspace)
         self.research_rail_button.set_active(True)
+        self.skills_rail_button.set_active(False)
+        self.library_rail_button.set_active(False)
+        self.library_rail_button.setToolTip("返回论文阅读")
+
+    def toggle_skills(self):
+        if self.skill_library is not None and self.workspace_stack.currentWidget() is self.skill_library:
+            self.show_reader()
+            return
+        if self.skill_library is None:
+            from paperreader.ui.skill_library import SkillLibrary
+            self.skill_library = SkillLibrary(self)
+            self.workspace_stack.addWidget(self.skill_library)
+        elif not (self.skill_library.editing or self.skill_library.creating):
+            self.skill_library.reload(preferred=self.skill_library.current_key)
+        self.workspace_stack.setCurrentWidget(self.skill_library)
+        self.skills_rail_button.set_active(True)
+        self.research_rail_button.set_active(False)
         self.library_rail_button.set_active(False)
         self.library_rail_button.setToolTip("返回论文阅读")
 
     def show_reader(self):
+        if (self.skill_library is not None and
+                self.workspace_stack.currentWidget() is self.skill_library and
+                not self.skill_library.confirm_leave()):
+            return False
         self.workspace_stack.setCurrentWidget(self.splitter)
         self.research_rail_button.set_active(False)
+        self.skills_rail_button.set_active(False)
         self.sync_library_rail()
+        return True
 
     def open_research_paper(self, identifier, page=None, rects=()):
         try:
@@ -1237,6 +1271,8 @@ class Window(QMainWindow):
             return False
         self.profile_config["theme"] = theme
         apply_theme(theme)
+        if self.skill_library is not None:
+            self.skill_library.refresh_palette()
         self.centralWidget().update()
         self.update_theme_art()
         self.view.refresh_theme()
@@ -1656,11 +1692,10 @@ class Window(QMainWindow):
                 note_action = f'<a class="chat-note-action" href="{href}">🔖︎&nbsp;添加到笔记</a>'
             footer = ""
             if status or note_action:
-                separator = '<td class="chat-gutter" width="12" align="center">│</td>' if status and note_action else ""
                 footer = (
                     '<table width="100%" border="0" cellspacing="0" cellpadding="0" '
                     'style="margin-top:8px; font-size:12px;"><tr>'
-                    f'<td class="chat-gutter" align="left">{status}</td>{separator}'
+                    f'<td class="chat-gutter" align="left">{status}</td>'
                     f'<td class="chat-gutter" align="right">{note_action}</td>'
                     f'</tr></table>{details}'
                 )

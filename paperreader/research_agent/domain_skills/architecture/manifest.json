@@ -1,0 +1,6 @@
+{
+  "id": "architecture",
+  "description": "建筑、城市空间与建造技术研究：场地、规范、材料、性能和方案取舍",
+  "when": "课题主要讨论建筑设计、建造、空间规划或相关工程约束；纯软件架构问题不加载",
+  "workflow": {"min_tasks": 2, "max_tasks": 3, "max_supplements": 1, "default_external_source": "web"}
+}

@@ -270,6 +270,37 @@ QToolButton#WorkRailButton { background: transparent; border: 1px solid transpar
 QToolButton#WorkRailButton:hover { background: #1b3040; border-color: #355665; }
 QToolButton#WorkRailButton[active="true"] { background: #17313c; border-color: #3c7180; }
 QToolButton#WorkRailButton:focus { border-color: #66ddda; }
+QWidget#SkillLibrary { background: #0b1019; }
+QFrame#SkillLibraryPanel { background: #101824; border: 1px solid #263345; border-radius: 12px; }
+QLabel#SkillLibraryTitle { color: #eaf4ff; font-size: 22px; font-weight: 700; }
+QLabel#SkillLibrarySeparator { color: #63788b; font-size: 19px; }
+QLabel#SkillLibraryDetailTitle { color: #eaf4ff; font-size: 18px; font-weight: 650; }
+QLabel#SkillLibraryMuted, QLabel#SkillLibraryFieldLabel { color: #a6b8ce; }
+QLabel#SkillLibrarySection { color: #66ddda; font-weight: 600; }
+QLabel#SkillLibraryBadge { color: #66ddda; background: #17313c; border-radius: 7px; padding: 4px 8px; }
+QPushButton#SkillLibraryButton { background: #162130; border: 1px solid #3c5369; border-radius: 8px; }
+QPushButton#SkillLibraryButton:hover { border-color: #66ddda; }
+QPushButton#SkillLibraryPrimary { background: #66ddda; color: #092426; border: 1px solid #66ddda; border-radius: 8px; font-weight: 650; }
+QPushButton#SkillLibraryPrimary:hover { background: #8ce9e6; }
+QListWidget#SkillCatalog { background: transparent; border: 0; outline: none; }
+QListWidget#SkillCatalog::item { background: #162130; border: 1px solid #364458; border-radius: 8px; margin: 3px 0; padding: 9px; }
+QListWidget#SkillCatalog::item:selected { background: #17313c; border-color: #66ddda; }
+QListWidget#SkillCatalog::item:hover { border-color: #66ddda; }
+QTabWidget#SkillLibraryStages::pane { border: 1px solid #364458; border-radius: 8px; }
+QTabWidget#SkillLibraryStages QTabBar::tab { color: #a6b8ce; padding: 8px 18px; border-bottom: 2px solid transparent; }
+QTabWidget#SkillLibraryStages QTabBar::tab:selected { color: #66ddda; border-bottom-color: #66ddda; }
+QWidget#SkillLibrary QLineEdit, QWidget#SkillLibrary QPlainTextEdit { background: #101824; border: 1px solid #3c5369; border-radius: 7px; padding: 7px; }
+QWidget#SkillLibrary QLineEdit:focus, QWidget#SkillLibrary QPlainTextEdit:focus { border-color: #66ddda; }
+QWidget#SkillLibrary QLineEdit#SkillDomainText, QWidget#SkillLibrary QPlainTextEdit#SkillDomainText,
+QWidget#SkillLibrary QTabWidget#SkillLibraryStages QPlainTextEdit {
+    background: #172736; border: 1px solid #3c7180; color: #eaf4ff;
+}
+QWidget#SkillLibrary QPlainTextEdit#SkillSystemText {
+    background: #1a2028; border: 1px solid #687486; color: #bfc9d4;
+}
+QPushButton#SkillDomainToggle { text-align: left; color: #66ddda; background: #17313c; border: 1px solid #3c7180; }
+QPushButton#SkillSystemToggle { text-align: left; color: #bfc9d4; background: #252d36; border: 1px solid #687486; }
+QScrollArea#SkillDetailScroll, QScrollArea#SkillDetailScroll > QWidget > QWidget { background: transparent; border: 0; }
 QWidget#LibraryPanel { background: #0e1520; }
 QWidget#PanelHeader { background: #101824; border-bottom: 1px solid #263345; }
 QWidget#ResearchWorkbench { background: #0e1520; border: 1px solid #263345; border-radius: 12px; }
@@ -278,6 +309,12 @@ QGraphicsView#ResearchMindmapCanvas { border: 1px solid #263345; border-radius: 
 QLabel#ResearchQuestionBubble { background: #263345; border-radius: 10px; padding: 9px 13px; }
 QLabel#ResearchAgentAvatar { background: #17313c; border-radius: 9px; }
 QFrame#ResearchResultCard, QFrame#ResearchPlainReply { background: #162130; border: 1px solid #263345; border-radius: 10px; }
+QFrame#ResearchLayoutCallout { background: #17313c; border: 1px solid #3c7180; border-radius: 10px; }
+QFrame#ResearchLayoutEvidence { background: #162130; border: 1px solid #3c7180; border-radius: 10px; }
+QFrame#ResearchLayoutTable { background: #162130; border: 1px solid #364458; border-radius: 10px; }
+QFrame#ResearchLayoutDivider { background: #364458; border: 0; }
+QLabel#ResearchLayoutSource { color: #66ddda; font-size: 11px; }
+QLabel#ResearchLayoutStage { color: #092426; background: #66ddda; border-radius: 13px; font-weight: bold; }
 QFrame#ResearchHistoryRow, QFrame#ResearchHistoryActive { background: #162130; border: 1px solid #364458; border-radius: 9px; }
 QFrame#ResearchHistoryActive, QFrame#ResearchHistoryRow:hover { border-color: #66ddda; }
 QLabel#ResearchHistoryMarker { color: #66ddda; border: 1px solid #3c7180; border-radius: 12px; }
@@ -334,6 +371,27 @@ QTabBar#ResearchTabs::tab { color: #a6b8ce; background: transparent; padding: 9p
 QTabBar#ResearchTabs::tab:selected { color: #66ddda; border-bottom-color: #66ddda; }
 QPushButton#ResearchEvidenceCard { background: #101824; border: 1px solid #263345; border-radius: 10px; padding: 0; }
 QPushButton#ResearchEvidenceCard:hover, QPushButton#ResearchEvidenceCard:focus { background: #17313c; border-color: #66ddda; }
+QScrollArea#ResearchEvidenceMatrix, QWidget#ResearchEvidenceBody,
+QWidget#ResearchEvidenceTaskRow, QWidget#ResearchEvidenceSubtasks,
+QWidget#ResearchEvidenceSubtaskRow, QWidget#ResearchEvidenceCards { background: transparent; border: 0; }
+QPushButton#ResearchEvidenceTaskHeader { background: #17313c; border: 1px solid #3c7180; border-radius: 9px; padding: 0; text-align: left; min-height: 64px; }
+QPushButton#ResearchEvidenceTaskHeader:hover, QPushButton#ResearchEvidenceTaskHeader:focus { background: #203c48; border-color: #66ddda; }
+QPushButton#ResearchEvidenceSubtaskHeader { background: #162130; border: 1px solid #364458; border-radius: 8px; padding: 0; text-align: left; min-height: 52px; }
+QPushButton#ResearchEvidenceSubtaskHeader:hover, QPushButton#ResearchEvidenceSubtaskHeader:focus { background: #203044; border-color: #66ddda; }
+QLabel#ResearchEvidenceTaskMarker { color: #66ddda; background: #17313c; border: 2px solid #66ddda; border-radius: 12px; font-weight: bold; }
+QFrame#ResearchEvidenceTaskLine { background: #3c5369; border: 0; }
+QLabel#ResearchEvidenceTaskTitle { color: #eaf4ff; font-size: 15px; font-weight: 600; }
+QLabel#ResearchEvidenceSubtaskTitle { color: #eaf4ff; font-size: 13px; font-weight: 600; }
+QLabel#ResearchEvidenceTaskMeta { color: #a6b8ce; font-size: 12px; }
+QLabel#ResearchEvidenceTaskStatus, QLabel#ResearchEvidenceTaskArrow { color: #66ddda; font-size: 12px; }
+QPushButton#ResearchEvidenceLocal { background: #172b3b; border: 1px solid #436f8b; border-radius: 10px; padding: 0; text-align: left; }
+QPushButton#ResearchEvidenceLocal:hover, QPushButton#ResearchEvidenceLocal:focus { background: #203c50; border-color: #66ddda; }
+QPushButton#ResearchEvidenceWeb { background: #2a2536; border: 1px solid #766087; border-radius: 10px; padding: 0; text-align: left; }
+QPushButton#ResearchEvidenceWeb:hover, QPushButton#ResearchEvidenceWeb:focus { background: #3a304a; border-color: #b99cce; }
+QLabel#ResearchEvidenceLocalBadge { color: #a9d8f5; background: #24485d; border-radius: 10px; padding: 3px 8px; font-size: 11px; }
+QLabel#ResearchEvidenceWebBadge { color: #dcc2f4; background: #493a5c; border-radius: 10px; padding: 3px 8px; font-size: 11px; }
+QFrame#ResearchEvidenceDivider { background: #3c5369; border: 0; }
+QLabel#ResearchEvidenceEmpty, QLabel#ResearchEvidenceEmptyTask { color: #a6b8ce; padding: 14px; }
 QLabel#ResearchEvidenceTitle { font-size: 15px; font-weight: bold; }
 QLabel#ResearchEvidenceMeta { color: #a6b8ce; }
 QLabel#ResearchEvidenceLink { color: #66ddda; }

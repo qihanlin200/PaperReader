@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1300" height="830" viewBox="0 0 1300 830">
+  <rect width="1300" height="830" fill="#0b1019"/>
+  <text x="42" y="52" fill="#eaf4ff" font-family="PingFang SC,Arial" font-size="27" font-weight="700">引用矩阵</text>
+  <text x="173" y="50" fill="#9aafc3" font-family="PingFang SC,Arial" font-size="15">按研究任务查看证据来源与原文定位</text>
+  <rect x="40" y="85" width="1220" height="704" rx="12" fill="#101824" stroke="#263345"/>
+  <line x1="89" y1="137" x2="89" y2="735" stroke="#3c5369" stroke-width="2"/>
+  <circle cx="89" cy="151" r="11" fill="#17313c" stroke="#66ddda" stroke-width="2"/>
+  <text x="85" y="156" fill="#66ddda" font-family="Arial" font-size="12" font-weight="700">1</text>
+  <rect x="120" y="115" width="1106" height="72" rx="9" fill="#17313c" stroke="#3c7180"/>
+  <text x="145" y="146" fill="#eaf4ff" font-family="PingFang SC,Arial" font-size="18" font-weight="600">任务 1 · 核对研究问题与方法</text>
+  <text x="145" y="170" fill="#a6b8ce" font-family="PingFang SC,Arial" font-size="13">已完成 · 2 条引用</text>
+  <text x="1183" y="155" fill="#66ddda" font-family="PingFang SC,Arial" font-size="17">⌄</text>
+  <rect x="120" y="205" width="538" height="200" rx="10" fill="#172b3b" stroke="#436f8b"/>
+  <rect x="142" y="224" width="76" height="25" rx="11" fill="#24485d"/>
+  <text x="156" y="242" fill="#a9d8f5" font-family="PingFang SC,Arial" font-size="12">本地论文</text>
+  <text x="231" y="242" fill="#a6b8ce" font-family="Arial" font-size="13">E1 · 第 3 页</text>
+  <text x="143" y="278" fill="#eaf4ff" font-family="PingFang SC,Arial" font-size="17" font-weight="600">论文 A · 方法设计</text>
+  <text x="143" y="309" fill="#bdcddb" font-family="PingFang SC,Arial" font-size="14">作者通过分层检索与对照实验评估模型表现，</text>
+  <text x="143" y="333" fill="#bdcddb" font-family="PingFang SC,Arial" font-size="14">并报告不同输入条件下的误差变化……</text>
+  <line x1="143" y1="363" x2="633" y2="363" stroke="#436f8b"/>
+  <text x="143" y="387" fill="#9ed7f3" font-family="PingFang SC,Arial" font-size="13">查看本地原文 ›</text>
+  <rect x="674" y="205" width="552" height="200" rx="10" fill="#2a2536" stroke="#766087"/>
+  <rect x="696" y="224" width="76" height="25" rx="11" fill="#493a5c"/>
+  <text x="708" y="242" fill="#dcc2f4" font-family="PingFang SC,Arial" font-size="12">网页检索</text>
+  <text x="785" y="242" fill="#b9a9c7" font-family="Arial" font-size="13">E2 · 原文网页</text>
+  <text x="697" y="278" fill="#f2eaf9" font-family="PingFang SC,Arial" font-size="17" font-weight="600">官方项目说明</text>
+  <text x="697" y="309" fill="#d7cbe1" font-family="PingFang SC,Arial" font-size="14">项目文档说明训练数据与复现方式，</text>
+  <text x="697" y="333" fill="#d7cbe1" font-family="PingFang SC,Arial" font-size="14">提供了进一步核验的公开入口……</text>
+  <line x1="697" y1="363" x2="1201" y2="363" stroke="#766087"/>
+  <text x="697" y="387" fill="#dcc2f4" font-family="PingFang SC,Arial" font-size="13">查看网页来源 ›</text>
+  <circle cx="89" cy="471" r="11" fill="#17313c" stroke="#66ddda" stroke-width="2"/>
+  <text x="85" y="476" fill="#66ddda" font-family="Arial" font-size="12" font-weight="700">2</text>
+  <rect x="120" y="435" width="1106" height="72" rx="9" fill="#162130" stroke="#364458"/>
+  <text x="145" y="466" fill="#eaf4ff" font-family="PingFang SC,Arial" font-size="18" font-weight="600">任务 2 · 比较结果与局限</text>
+  <text x="145" y="490" fill="#a6b8ce" font-family="PingFang SC,Arial" font-size="13">已完成 · 1 条引用</text>
+  <text x="1183" y="475" fill="#a6b8ce" font-family="PingFang SC,Arial" font-size="17">⌄</text>
+  <rect x="120" y="525" width="538" height="200" rx="10" fill="#172b3b" stroke="#436f8b"/>
+  <rect x="142" y="544" width="76" height="25" rx="11" fill="#24485d"/>
+  <text x="156" y="562" fill="#a9d8f5" font-family="PingFang SC,Arial" font-size="12">本地论文</text>
+  <text x="231" y="562" fill="#a6b8ce" font-family="Arial" font-size="13">E3 · 第 8 页</text>
+  <text x="143" y="598" fill="#eaf4ff" font-family="PingFang SC,Arial" font-size="17" font-weight="600">论文 B · 实验结果</text>
+  <text x="143" y="629" fill="#bdcddb" font-family="PingFang SC,Arial" font-size="14">实验在三组数据上比较召回率与运行耗时，</text>
+  <text x="143" y="653" fill="#bdcddb" font-family="PingFang SC,Arial" font-size="14">局限来自样本数量与数据分布……</text>
+  <line x1="143" y1="683" x2="633" y2="683" stroke="#436f8b"/>
+  <text x="143" y="707" fill="#9ed7f3" font-family="PingFang SC,Arial" font-size="13">查看本地原文 ›</text>
+</svg>

@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="900" viewBox="0 0 1500 900">
+  <style>
+    text { font-family: 'PingFang SC','Microsoft YaHei',sans-serif; fill:#e4ebf5; }
+    .muted { fill:#a6b8ce; font-size:14px; }
+    .accent { fill:#66ddda; }
+    .title { font-size:23px; font-weight:700; }
+    .small { font-size:12px; }
+    .body { font-size:15px; }
+    .card { fill:#162130; stroke:#364458; stroke-width:1; }
+    .field { fill:#101824; stroke:#3c5369; stroke-width:1; }
+  </style>
+  <rect width="1500" height="900" fill="#0b1019"/>
+  <rect width="1500" height="76" fill="#101824"/>
+  <text x="26" y="47" font-size="22" font-weight="700">✦  PaperReader</text>
+  <path d="M0 76H1500" stroke="#263345"/>
+  <rect y="76" width="48" height="824" fill="#0c1420"/>
+  <path d="M48 76V900" stroke="#263345"/>
+  <g fill="none" stroke="#a6b8ce" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M14 103Q24 98 24 103Q34 98 34 103V125Q24 120 24 125Q14 120 14 125Z M24 103V125"/>
+    <circle cx="24" cy="174" r="10"/><path d="M17 181L13 186 M21 169L24 164L27 169L32 172L27 175L24 180L21 175L16 172Z"/>
+  </g>
+  <rect x="5" y="202" width="38" height="38" rx="10" fill="#17313c" stroke="#3c7180"/>
+  <g fill="none" stroke="#66ddda" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="15" y="209" width="15" height="20" rx="2"/><path d="M19 214H26 M19 219H26 M19 224H24 M33 216L36 219L33 222 M12 216L9 219L12 222"/>
+  </g>
+  <text x="65" y="126" class="title">技能库</text>
+  <text x="65" y="152" class="muted">管理研究技能，编辑领域指令，查看系统能力</text>
+  <rect x="1184" y="104" width="118" height="37" rx="8" class="field"/><text x="1209" y="128" class="body">导入技能</text>
+  <rect x="1314" y="104" width="156" height="37" rx="8" fill="#66ddda"/><text x="1337" y="128" class="body" fill="#092426" style="fill:#092426;font-weight:700">＋ 新建领域技能</text>
+  <path d="M48 176H1500" stroke="#263345"/>
+  <rect x="64" y="194" width="352" height="686" rx="12" fill="#101824" stroke="#263345"/>
+  <text x="82" y="225" font-size="16" font-weight="700">技能目录</text>
+  <rect x="82" y="240" width="316" height="38" rx="8" class="field"/><text x="96" y="264" class="muted">⌕  搜索名称、说明或适用场景</text>
+  <text x="82" y="310" class="small accent">领域技能  4</text>
+  <rect x="75" y="323" width="330" height="86" rx="9" fill="#17313c" stroke="#3c7180"/>
+  <text x="94" y="351" class="body" font-weight="700">医学文献研究</text><text x="316" y="351" class="small accent">内置</text>
+  <text x="94" y="375" class="muted">适用于医学证据与临床研究问题</text>
+  <text x="94" y="395" class="small muted">可创建用户覆盖版本</text>
+  <rect x="75" y="417" width="330" height="70" rx="9" class="card"/>
+  <text x="94" y="445" class="body">计算机科学研究</text><text x="316" y="445" class="small accent">内置</text>
+  <text x="94" y="469" class="muted">算法、系统、实验与实现比较</text>
+  <rect x="75" y="495" width="330" height="70" rx="9" class="card"/>
+  <text x="94" y="523" class="body">材料科学研究</text><text x="316" y="523" class="small accent">用户</text>
+  <text x="94" y="547" class="muted">材料表征、工艺与性能关系</text>
+  <text x="82" y="606" class="small accent">系统能力  4 · 只读</text>
+  <rect x="75" y="618" width="330" height="58" rx="9" class="card"/>
+  <text x="94" y="653" class="body">文献对比</text><text x="333" y="653" class="small muted">只读</text>
+  <rect x="75" y="684" width="330" height="58" rx="9" class="card"/>
+  <text x="94" y="719" class="body">研究计划</text><text x="333" y="719" class="small muted">只读</text>
+  <rect x="432" y="194" width="1052" height="686" rx="12" fill="#101824" stroke="#263345"/>
+  <text x="460" y="231" font-size="20" font-weight="700">医学文献研究</text>
+  <rect x="648" y="207" width="46" height="25" rx="8" fill="#17313c"/><text x="656" y="224" class="small accent">内置</text>
+  <text x="460" y="261" class="muted">内置技能可保存为用户覆盖版本；删除覆盖后恢复内置版本。</text>
+  <rect x="1268" y="211" width="91" height="34" rx="8" class="field"/><text x="1288" y="233" class="body">导出</text>
+  <rect x="1368" y="211" width="92" height="34" rx="8" class="field"/><text x="1387" y="233" class="body">编辑</text>
+  <path d="M444 282H1472" stroke="#263345"/>
+  <text x="460" y="317" class="small accent">技能信息</text>
+  <text x="460" y="347" class="muted">ID</text><rect x="555" y="327" width="868" height="37" rx="7" class="field"/><text x="568" y="351" class="body">medicine</text>
+  <text x="460" y="397" class="muted">简介</text><rect x="555" y="377" width="868" height="50" rx="7" class="field"/><text x="568" y="407" class="body">核查医学研究的设计、证据等级、效应与适用人群。</text>
+  <text x="460" y="460" class="muted">适用场景</text><rect x="555" y="440" width="868" height="50" rx="7" class="field"/><text x="568" y="470" class="body">临床试验、系统综述、诊断与治疗方案评估。</text>
+  <path d="M444 514H1472" stroke="#263345"/>
+  <text x="460" y="549" class="small accent">执行阶段指令</text>
+  <rect x="460" y="565" width="96" height="34" rx="7" fill="#17313c" stroke="#3c7180"/><text x="487" y="587" class="body accent">规划</text>
+  <text x="574" y="587" class="muted">初判</text><text x="669" y="587" class="muted">回答</text><text x="764" y="587" class="muted">评估</text><text x="859" y="587" class="muted">总结</text>
+  <rect x="460" y="610" width="964" height="224" rx="8" class="field"/>
+  <text x="481" y="642" class="body">先明确研究问题、对象与证据范围，再规划检索和分析步骤。</text>
+  <text x="481" y="671" class="muted">逐项检查研究设计、样本、终点、偏倚风险及证据缺口……</text>
+  <text x="460" y="857" class="small muted">预览模式 · 点击「编辑」后可修改并保存</text>
+</svg>

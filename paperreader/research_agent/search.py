@@ -1,7 +1,12 @@
 """External discovery providers. Evidence levels describe what was retrieved."""
+import json
+from urllib.parse import quote_plus, urlsplit
+
 from paperreader.services.lazy import httpx, keyring
 
-SEARCH_ACCOUNTS = {"Brave Search": "search-brave", "OpenAlex": "search-openalex"}
+SEARCH_ACCOUNTS = {"Bright Data": "search-brightdata", "OpenAlex": "search-openalex"}
+BRIGHTDATA_ZONE_ACCOUNT = "search-brightdata-serp-zone"
+SEARCH_ENGINES = {"bing": "Bing", "google": "Google"}
 
 
 def search_key(provider):
@@ -11,17 +16,57 @@ def search_key(provider):
         return ""
 
 
-def search_web(query):
-    key = search_key("Brave Search")
+def brightdata_zone():
+    try:
+        return keyring.get_password("PaperReader", BRIGHTDATA_ZONE_ACCOUNT) or ""
+    except keyring.errors.KeyringError:
+        return ""
+
+
+def search_web(query, *, start=0, engine="bing"):
+    if engine not in SEARCH_ENGINES:
+        raise ValueError("不支持的 Bright Data 搜索引擎")
+    key = search_key("Bright Data")
     if not key:
-        raise ValueError("未配置 Brave Search API Key")
-    response = httpx.get("https://api.search.brave.com/res/v1/web/search",
-                         headers={"X-Subscription-Token": key}, params={"q": query, "count": 6}, timeout=8)
+        raise ValueError("未配置 Bright Data API Key")
+    zone = brightdata_zone()
+    if not zone:
+        raise ValueError("未配置 Bright Data SERP Zone")
+    url = f"https://www.{engine}.com/search?q={quote_plus(query)}&brd_json=1"
+    if start:
+        url += f"&{'first' if engine == 'bing' else 'start'}={start + 1 if engine == 'bing' else start}"
+    response = httpx.post(
+        "https://api.brightdata.com/request",
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        json={"zone": zone, "url": url, "format": "json"},
+        timeout=90,
+    )
     response.raise_for_status()
-    return [dict(kind="web", id=item["url"], url=item["url"], title=item["title"],
-                 level="搜索摘要", text=item.get("description", ""))
-            for item in response.json().get("web", {}).get("results", [])
-            if item.get("url") and item.get("title")]
+    try:
+        payload = response.json()
+        if "body" in payload:
+            if payload.get("status_code") != 200:
+                raise ValueError(f"Bright Data 搜索失败（HTTP {payload.get('status_code')}）")
+            payload = json.loads(payload["body"])
+        organic = payload["organic"]
+        if not isinstance(organic, list):
+            raise ValueError("Bright Data 搜索结果格式异常")
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise ValueError("Bright Data 未返回有效的搜索结果") from exc
+    results = []
+    for item in organic[:10]:
+        if not isinstance(item, dict):
+            continue
+        target = item.get("link") or item.get("url")
+        title = item.get("title")
+        if not isinstance(target, str) or not isinstance(title, str) or not title.strip():
+            continue
+        parsed = urlsplit(target)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            continue
+        results.append(dict(kind="web", id=target, url=target, title=title,
+                            level="搜索摘要", text=item.get("description") or item.get("snippet") or ""))
+    return results
 
 
 def search_openalex(query):
@@ -123,3 +168,41 @@ def read_public_source(entry, query, limit):
     ranked.sort(key=lambda item: item[0], reverse=True)
     excerpts = [f"第 {page} 页：{excerpt}" if page else excerpt for _, page, excerpt in ranked[:2]]
     return dict(entry, level="原文", text="\n\n".join(excerpts), original_url=url)
+
+
+def retrieve_web_evidence(query, limit, emit, *, search=search_web, read=read_public_source):
+    """Read five SERP hits, extending to ten only when fewer than three yield original text."""
+    limit.check()
+    candidates = search(query)
+    seen = set()
+    unique = []
+    for item in candidates:
+        if item["id"] not in seen:
+            seen.add(item["id"])
+            unique.append(item)
+    results = []
+    for item in unique[:5]:
+        limit.check()
+        results.append(read(item, query, limit))
+    valid = sum(item.get("level") == "原文" and bool(item.get("text")) for item in results)
+    if valid >= 3:
+        emit("trace", f"网页检索 · 前 {len(results)} 页读取到 {valid} 条原文")
+        return results
+    emit("trace", f"网页检索 · 前 {len(results)} 页仅 {valid} 条有效原文，扩展至前 10 页")
+    if len(unique) < 10:
+        limit.check()
+        try:
+            for item in search(query, start=10):
+                if item["id"] not in seen:
+                    seen.add(item["id"])
+                    unique.append(item)
+                if len(unique) >= 10:
+                    break
+        except (httpx.HTTPError, OSError, ValueError, KeyError, TypeError):
+            emit("trace", "网页检索 · 补充结果暂不可用，继续使用已取得的网页")
+    for item in unique[5:10]:
+        limit.check()
+        results.append(read(item, query, limit))
+    emit("trace", f"网页检索 · 共读取 {len(results)} 页，获得 "
+         f"{sum(item.get('level') == '原文' and bool(item.get('text')) for item in results)} 条原文")
+    return results

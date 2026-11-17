@@ -15,8 +15,9 @@ from .nodes.subtask import subtask_node
 from .nodes.summarize import summarize_node
 from .nodes.overview_map import overview_map_node
 from .nodes.full_map import full_map_node
-from .skills import SKILLS
-from .search import read_public_source, search_web, search_openalex
+from .skills import SKILLS, WORKFLOW_SKILLS
+from .domain_registry import load_domain_skill
+from .search import SEARCH_ENGINES, read_public_source, retrieve_web_evidence, search_openalex, search_web
 from .operations import find_passages, search_academic, traced_model
 from paperreader.services.lazy import httpx
 
@@ -33,7 +34,7 @@ def route(state):
 
 
 def execute(run, sources, config, key, theme, limit, emit, *, model=complete, academic=search_academic):
-    """Plan, run at most three research subtasks, and synthesize their results."""
+    """Run a research turn with an optional, independently loaded domain profile."""
     sources = list(sources)
     state = run.get("workflow") or {}
     evidence = list(run["evidence"])
@@ -54,10 +55,22 @@ def execute(run, sources, config, key, theme, limit, emit, *, model=complete, ac
         return result
 
     def discover(query):
-        if state.get("source") == "web":
-            results = search_web(query)
-            return [read_public_source(item, query, limit) if i < 3 else item
-                    for i, item in enumerate(results)]
+        results = []
+        if run.get("web_search"):
+            try:
+                engine = run.get("search_engine", "bing")
+                if engine not in SEARCH_ENGINES:
+                    engine = "bing"
+                results.extend(retrieve_web_evidence(
+                    query, limit, emit,
+                    search=lambda text, **kwargs: search_web(text, engine=engine, **kwargs)))
+            except (httpx.HTTPError, OSError, ValueError, KeyError, TypeError) as exc:
+                detail = ("请求超时" if isinstance(exc, httpx.TimeoutException)
+                          else str(exc) if isinstance(exc, ValueError)
+                          else type(exc).__name__)
+                emit("trace", f"网页检索失败 · {detail} · 继续核对已有资料")
+        if not run.get("paper_search"):
+            return results
         try:
             papers = search_openalex(query)
         except (httpx.HTTPError, OSError, ValueError, RuntimeError):
@@ -65,31 +78,65 @@ def execute(run, sources, config, key, theme, limit, emit, *, model=complete, ac
         try:
             fallback = academic(query)
         except (httpx.HTTPError, OSError, ValueError, KeyError, TypeError):
-            if not papers:
+            if not papers and not results:
                 raise
             fallback = []
         combined = {}
         for paper in papers + fallback:
             combined.setdefault(paper["id"].casefold(), paper)
-        return [read_public_source(item, query, limit) if i < 2 else item
-                for i, item in enumerate(list(combined.values())[:8])]
+        return results + [read_public_source(item, query, limit) if i < 2 else item
+                          for i, item in enumerate(list(combined.values())[:8])]
 
     def load_skill(_):
         source = state.get("source", "mixed")
+        presentation_skill = state.get("presentation_skill")
+        if presentation_skill in WORKFLOW_SKILLS:
+            emit("trace", f"加载 Skill · {presentation_skill} · "
+                 f"{WORKFLOW_SKILLS[presentation_skill].description}")
         selected = state.get("documents", [])
         sources[:] = [item for item in sources if (source in ("library", "mixed") or (state["mode"] == "research" and source in ("academic", "web")))
                       and (not selected or item["id"] in selected)]
-        run["academic"] = bool(run.get("academic") and source in ("web", "academic", "mixed"))
+        run["paper_search"] = bool(run.get("paper_search", run.get("academic", False)))
+        run["web_search"] = bool(run.get("web_search", False))
+        run["academic"] = run["paper_search"] or run["web_search"]
         run["search_source"] = source
-        run["library_only"] = source == "library"
+        run["library_only"] = source == "library" and not run["academic"]
+        domain_ids = state.get("domain_skills") or []
+        loaded = [item for identifier in domain_ids[:2]
+                  if (item := load_domain_skill(identifier)) is not None]
+        missing = set(domain_ids[:2]) - {item.id for item in loaded}
+        if missing:
+            emit("trace", "领域 Skill 不可用 · " + ", ".join(sorted(missing)) + " · 使用通用流程")
+        profile = dict(loaded[0].workflow) if loaded else {}
+        run["domain_skill_ids"] = [item.id for item in loaded]
+        run["workflow_profile"] = profile
+        for phase in ("plan", "draft", "evaluate", "summary"):
+            run[f"domain_{phase}_prompt"] = "\n".join(
+                item.instructions[phase] for item in loaded)
         skill = SKILLS.get(state.get("skill"))
+        instructions = []
         if skill:
-            run["skill_prompt"] = skill[1]
-            emit("trace", f"加载 Skill · {state['skill']}")
+            instructions.append(skill.prompt)
+            emit("trace", f"加载 Skill · {state['skill']} · {skill.description}")
+        for item in loaded:
+            instructions.append(item.instructions["answer"])
+            emit("trace", f"加载领域 Skill · {item.id} · {item.description}")
+        run["skill_prompt"] = "\n".join(instructions)
+        if loaded:
+            emit("trace", f"研究流程 · 主领域 {loaded[0].id} · "
+                 f"最多 {profile.get('max_tasks', 3)} 个子任务 / "
+                 f"{profile.get('max_supplements', 1)} 轮补查")
         return {"route": "plan" if state["mode"] == "research" else "answer"}
 
+    def forward_answer_event(kind, value):
+        # The direct-answer path gathers evidence inside answer_question. Keep
+        # the workflow snapshot in sync so its final publish cannot erase it.
+        if kind in ("checkpoint", "academic"):
+            evidence[:] = value
+        emit(kind, value)
+
     def supplement(_):
-        state["supplemented"] = True
+        state["supplement_count"] = state.get("supplement_count", 0) + 1
         query = state.pop("followup_query")
         if not sources and not run.get("academic"):
             return {"route": "summarize"}
@@ -129,12 +176,12 @@ def execute(run, sources, config, key, theme, limit, emit, *, model=complete, ac
     graph.add_node("intent", partial(intent_node, run=run, state=state, publish=publish, emit=emit, call=call, sources=sources))
     graph.add_node("skill", load_skill)
     graph.add_node("plan", partial(plan_node, run=run, state=state, publish=publish, emit=emit, call=call))
-    graph.add_node("answer", partial(answer_node, run=run, state=state, publish=publish, sources=sources, model_config=config, key=key, theme=theme, limit=limit, emit=emit, model=model, academic=discover, call=call))
+    graph.add_node("answer", partial(answer_node, run=run, state=state, publish=publish, sources=sources, model_config=config, key=key, theme=theme, limit=limit, emit=forward_answer_event, model=model, academic=discover, call=call))
     graph.add_node("next_task", partial(next_task, state=state))
     graph.add_node("subtask", partial(subtask_node, state=state, run=run, limit=limit, publish=publish, emit=emit, evidence=evidence, sources=sources, model_config=config, key=key, theme=theme, model=model, academic=discover, call=call))
-    graph.add_node("evaluate", partial(evaluate_node, state=state, evidence=evidence, call=call, emit=emit))
+    graph.add_node("evaluate", partial(evaluate_node, run=run, state=state, evidence=evidence, call=call, emit=emit))
     graph.add_node("supplement", supplement)
-    graph.add_node("summarize", partial(summarize_node, state=state, evidence=evidence,
+    graph.add_node("summarize", partial(summarize_node, run=run, state=state, evidence=evidence,
                                        publish=publish, emit=emit, call=call))
     graph.add_node("overview_map", partial(overview_map_node, state=state, publish=publish, emit=emit, call=call))
     graph.add_node("full_map", partial(full_map_node, state=state, publish=publish, emit=emit, model_config=config, key=key, limit=limit, model=model, call=call, theme=theme))
