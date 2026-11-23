@@ -1,6 +1,6 @@
 """Theme-aware landing page for the reading workspace."""
-from PySide6.QtCore import QRect, Qt
-from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPixmap
+from PySide6.QtCore import QRectF, Qt
+from PySide6.QtGui import QColor, QLinearGradient, QMovie, QPainter, QPixmap
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
 from paperreader.services.themes import THEME_ROOT
@@ -21,35 +21,64 @@ class ContentButton(QPushButton):
 class ReadingHomeBody(QWidget):
     def __init__(self):
         super().__init__()
-        self.decoration = QPixmap()
+        self.background_movie = None
+        self.background_still = QPixmap()
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
 
     def paintEvent(self, event):
         super().paintEvent(event)
-        if self.decoration.isNull():
+        frame = (self.background_movie.currentPixmap()
+                 if self.background_movie is not None else QPixmap())
+        if frame.isNull():
+            frame = self.background_still
+        if frame.isNull():
             return
         with QPainter(self) as painter:
-            painter.drawPixmap(0, 0, self.decoration)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            painter.setOpacity(0.5)
+            source = QRectF(frame.rect())
+            target = QRectF(self.rect())
+            source_ratio = source.width() / source.height()
+            target_ratio = target.width() / target.height()
+            if source_ratio > target_ratio:
+                width = source.height() * target_ratio
+                source.setLeft((source.width() - width) / 2)
+                source.setWidth(width)
+            else:
+                height = source.width() / target_ratio
+                source.setTop((source.height() - height) / 2)
+                source.setHeight(height)
+            painter.drawPixmap(target, frame, source)
 
     def set_theme(self, theme):
-        self.decoration = QPixmap()
+        if self.background_movie is not None:
+            self.background_movie.stop()
+            self.background_movie.deleteLater()
+            self.background_movie = None
+        self.background_still = QPixmap()
         if theme == "naruto":
-            reference = QPixmap(str(THEME_ROOT / theme / "home-decoration.png"))
-            if not reference.isNull():
-                # Use the canopy below the header and fade into the home surface.
-                canopy = reference.copy(QRect(0, 111, 485, 240))
-                self.decoration = QPixmap(canopy.size())
-                self.decoration.fill(Qt.GlobalColor.transparent)
-                with QPainter(self.decoration) as painter:
-                    painter.drawPixmap(0, 0, canopy)
-                    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
-                    for x, y in ((canopy.width(), 0), (0, canopy.height())):
-                        fade = QLinearGradient(0, 0, x, y)
-                        fade.setColorAt(0, Qt.GlobalColor.white)
-                        fade.setColorAt(0.72, Qt.GlobalColor.white)
-                        fade.setColorAt(1, Qt.GlobalColor.transparent)
-                        painter.fillRect(canopy.rect(), fade)
+            folder = THEME_ROOT / theme
+            self.background_still = QPixmap(str(folder / "home-background.png"))
+            movie = QMovie(str(folder / "home-background.gif"), parent=self)
+            if movie.isValid():
+                movie.setSpeed(100)
+                movie.frameChanged.connect(self.update)
+                self.background_movie = movie
+                if self.isVisible():
+                    movie.start()
+            else:
+                movie.deleteLater()
         self.update()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self.background_movie is not None:
+            self.background_movie.start()
+
+    def hideEvent(self, event):
+        if self.background_movie is not None:
+            self.background_movie.stop()
+        super().hideEvent(event)
 
 
 class ReadingHome(QScrollArea):
