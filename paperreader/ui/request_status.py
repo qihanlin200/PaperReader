@@ -1,12 +1,14 @@
 """Collapsible, local request activity; never logs prompts, secrets, or responses."""
 import time
 from html import escape
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QToolButton, QProgressBar, QPlainTextEdit, QSizePolicy
 from paperreader.ui.theme import theme_color
 
 
 class RequestStatus(QWidget):
+    finished = Signal(object, object)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
@@ -88,6 +90,15 @@ class RequestStatus(QWidget):
             self.owner = None
         self.render_inline()
 
+    def discard_session(self, paper_id, session_id):
+        for context in list(self.records):
+            if context[:2] == (paper_id, session_id):
+                self.records.pop(context)
+        if self.owner is not None and self.owner[:2] == (paper_id, session_id):
+            self.owner = None
+        if self.context is not None and self.context[:2] == (paper_id, session_id):
+            self.context = None
+
     def render_inline(self, context=None):
         if self.browser is None: return
         if self.owner is not None and hasattr(self, 'started'):
@@ -112,12 +123,21 @@ class RequestStatus(QWidget):
             details = (f'<p align="left" style="color:{theme_color("#91aabd")}; '
                        f'font-size:12px; margin:4px 0 10px 0; {alignment}">{lines}</p>')
         if footer:
-            title = escape(' · '.join(record['title'].split(' · ')[2:]) or record['title'])
+            title = escape(' · '.join(record['title'].split(' · ')[1:]) or record['title'])
         link = (f'<a href="{escape(href, quote=True)}" '
                 f'style="color:{theme_color("#66ddda")}; text-decoration:none;">{arrow} {title}</a>')
         if footer:
             return link, details
         return f'<p align="left" style="margin:4px 0 6px 0; {alignment}">{link}</p>' + details
+
+    def restore(self, context, record):
+        """Load a saved display-only record without replacing a live request."""
+        if (context in self.records or not isinstance(record, dict) or
+                not isinstance(record.get('title'), str) or
+                not isinstance(record.get('log'), str)):
+            return
+        self.records[context] = dict(title=record['title'][:400], log=record['log'][:12000],
+                                     expanded=record.get('expanded') is True)
 
     def expand(self, expanded):
         self.log.setVisible(expanded)
@@ -134,6 +154,7 @@ class RequestStatus(QWidget):
         self.label = label
         self.phase = '等待模型响应'
         self.characters = 0
+        self.model_calls = 0
         self.running = True
         self.log.clear()
         if self.browser is None: self.show()
@@ -158,12 +179,25 @@ class RequestStatus(QWidget):
         if first_chunk:
             self.tick()
 
+    def model_call(self, title, seconds, usage):
+        self.model_calls += 1
+        details = [f'第 {self.model_calls} 次调用：{title}', f'{seconds:g} 秒']
+        for name, key in (('输入', 'prompt_tokens'), ('输出', 'completion_tokens'),
+                          ('合计', 'total_tokens')):
+            if isinstance(usage.get(key), int):
+                details.append(f'{name} {usage[key]} tokens')
+        if not any(key in usage for key in ('prompt_tokens', 'completion_tokens', 'total_tokens')):
+            details.append('服务商未返回 token 用量')
+        self.add(' · '.join(details))
+        self.tick()
+
     def tick(self, *, force=False):
         if not force and self.browser is not None and self.browser.is_user_scrolling():
             return
         elapsed = int(time.monotonic() - self.started)
         count = f' · 已接收 {self.characters} 字符' if self.characters else ''
-        self.toggle.setText(f'{self.label} · {self.phase} · {elapsed}秒{count}')
+        calls = f' · 调用 {self.model_calls} 次' if self.model_calls else ''
+        self.toggle.setText(f'{self.label} · {self.phase} · {elapsed}秒{calls}{count}')
         self.render_inline()
 
     def finish(self, success=True, *, stopped=False):
@@ -177,3 +211,5 @@ class RequestStatus(QWidget):
         self.tick(force=True)
         self.toggle.setChecked(not success)
         self.expand(not success)
+        if self.owner in self.records:
+            self.finished.emit(self.owner, dict(self.records[self.owner]))

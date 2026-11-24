@@ -40,6 +40,18 @@ class CoreTests(unittest.TestCase):
         with patch("paperreader.services.network.httpx.Client", lambda **kw: original(transport=httpx.MockTransport(respond), **kw)):
             self.assertEqual(complete({"endpoint": "https://example.org/v1", "model": "test"}, "test", [{"role": "user", "content": "hi"}]), "answer")
 
+    def test_api_request_does_not_enforce_legacy_character_limit(self):
+        original = httpx.Client
+        prompt = "paper " * 11000
+        def respond(request):
+            self.assertEqual(request.read().decode().count("paper "), 11000)
+            return httpx.Response(200, json={"choices": [{"message": {"content": "answer"}}]})
+        with patch("paperreader.services.network.httpx.Client",
+                   lambda **kw: original(transport=httpx.MockTransport(respond), **kw)):
+            self.assertEqual(complete({"endpoint": "https://example.org/v1", "model": "test",
+                                       "max_input_chars": 50000}, "test",
+                                      [{"role": "user", "content": prompt}]), "answer")
+
     def test_http_intranet_api_and_invalid_address(self):
         original = httpx.Client
         def respond(request):

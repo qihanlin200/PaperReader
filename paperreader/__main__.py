@@ -12,6 +12,10 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtGui import QIcon
 from platformdirs import user_data_dir
 from paperreader.services.instance import restart_previous
+from paperreader.logger import configure_logging, get_logger, limits
+
+
+log = get_logger(__name__)
 
 
 def main():
@@ -54,11 +58,20 @@ def main():
             return result
     root = Path(user_data_dir("PaperReader", appauthor=False))
     root.mkdir(parents=True, exist_ok=True)
+    try:
+        import json
+        saved = json.loads((root / "config.json").read_text()) if (root / "config.json").exists() else {}
+        size_mb, days = limits(saved.get("log_size_mb", 10), saved.get("log_retention_days", 14))
+    except (OSError, ValueError, TypeError):
+        size_mb, days = 10, 14
+    configure_logging(root, size_mb=size_mb, retention_days=days)
+    sys.excepthook = lambda kind, error, traceback: log.error(
+        "未捕获的应用异常", exc_info=(kind, error, traceback))
     # Serialize startup across double-clicks. A second simultaneous launch is ignored.
     gate = QLockFile(str(root / "startup.lock"))
     gate.setStaleLockTime(30000)
     if not gate.tryLock(0):
-        print("PaperReader 正在启动，忽略重复启动。")
+        log.info("PaperReader 正在启动，忽略重复启动。")
         return 0
     try:
         restart_previous(Path(__file__).resolve().parent.parent)
@@ -68,6 +81,7 @@ def main():
         window = Window()
         timings["window_ready"] = round(time.perf_counter() - _started, 3)
     except Exception as exc:
+        log.error("应用启动失败", exc_info=True)
         gate.unlock()
         QMessageBox.critical(None, "启动失败", str(exc))
         return 1

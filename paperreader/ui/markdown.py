@@ -1,5 +1,7 @@
 """Markdown display for untrusted model output, without HTML or image loading."""
+import re
 import time
+import hashlib
 from PySide6.QtCore import Signal, Qt, QObject, QSignalBlocker, QTimer, QRectF
 from concurrent.futures import ThreadPoolExecutor
 from PySide6.QtGui import QTextDocument, QTextCursor, QTextBlockFormat, QTextCharFormat, QTextFormat, QTextTable, QColor, QBrush, QPainter, QPainterPath
@@ -17,6 +19,38 @@ _ANALYSIS_SECTION_LABELS = {
     "一句话概括", "研究问题", "核心方法", "方法骨架", "主要贡献",
     "关键证据", "关键结果", "实验结果", "局限与适用范围", "局限性", "阅读建议",
 }
+_PAGE_LABEL = r'(?:第\s*[1-9]\d*\s*页|p\.\s*[1-9]\d*)'
+_ANALYSIS_PAGE = re.compile(r'(?<![\w/])(?:\[(?P<bracketed>' + _PAGE_LABEL + r')\]|(?P<plain>' + _PAGE_LABEL + r'))(?!\d)', re.I)
+_MARKDOWN_LINK = re.compile(r'!?\[[^\]\n]*\]\([^\n)]*\)')
+
+
+def link_analysis_pages(text, paper_id, page_count):
+    """Link cited PDF pages while leaving math, code, and existing links untouched."""
+    def link_plain(segment):
+        def replace(match):
+            label = match.group('bracketed') or match.group('plain')
+            page = int(re.search(r'\d+', label).group())
+            if page > page_count:
+                return match.group()
+            return f'[{label}](paperreader-page://open?paper={paper_id}&page={page})'
+
+        output = []
+        offset = 0
+        for existing in _MARKDOWN_LINK.finditer(segment):
+            output.append(_ANALYSIS_PAGE.sub(replace, segment[offset:existing.start()]))
+            output.append(existing.group())
+            offset = existing.end()
+        output.append(_ANALYSIS_PAGE.sub(replace, segment[offset:]))
+        return ''.join(output)
+
+    output = []
+    offset = 0
+    for protected in TOKENS.finditer(text):
+        output.append(link_plain(text[offset:protected.start()]))
+        output.append(protected.group())
+        offset = protected.end()
+    output.append(link_plain(text[offset:]))
+    return ''.join(output)
 
 
 def replace_citations(text, replacements):
@@ -41,6 +75,7 @@ class MarkdownBrowser(QTextBrowser):
     followUpRequested = Signal(str)
     mathUpdated = Signal()
     headingsChanged = Signal()
+    figurePreviewRequested = Signal(object, str)
 
     def __init__(self, parent=None, reading_style=False, allow_followup=False):
         super().__init__(parent)
@@ -57,6 +92,8 @@ class MarkdownBrowser(QTextBrowser):
         self._math_running = False
         self._markdown_text = ''
         self._markdown_footer = ''
+        self._trusted_figures = {}
+        self._figure_labels = {}
         self._math_result = MathResult(self)
         self._math_result.ready.connect(self._math_ready)
         self._math_render_timer = QTimer(self)
@@ -133,6 +170,23 @@ class MarkdownBrowser(QTextBrowser):
         self._wheel_scrolling_until = time.monotonic() + 0.18
         super().wheelEvent(event)
 
+    def mouseDoubleClickEvent(self, event):
+        cursor = self.cursorForPosition(event.position().toPoint())
+        for position in (cursor.position(), cursor.position() - 1):
+            if position < 0:
+                continue
+            candidate = QTextCursor(self.document())
+            candidate.setPosition(position)
+            candidate.movePosition(QTextCursor.MoveOperation.NextCharacter,
+                                   QTextCursor.MoveMode.KeepAnchor)
+            image_format = candidate.charFormat().toImageFormat()
+            url = image_format.name()
+            if url.startswith('paperreader-figure:') and url in self.math_resources:
+                self.figurePreviewRequested.emit(self.math_resources[url], self._figure_labels.get(url, '论文原图'))
+                event.accept()
+                return
+        super().mouseDoubleClickEvent(event)
+
     def is_user_scrolling(self):
         return self.verticalScrollBar().isSliderDown() or time.monotonic() < self._wheel_scrolling_until
 
@@ -185,14 +239,21 @@ class MarkdownBrowser(QTextBrowser):
         menu.deleteLater()
 
     def loadResource(self, resource_type, name):
-        # Only internally rendered math images; never external or local-file images.
+        # Only app-rendered math and PDF excerpts; never model-supplied image URLs.
         return self.math_resources.get(name.toString()) if name is not None else None
 
-    def set_markdown(self, text, *, footer_html="", reuse=False):
-        if reuse and (text, footer_html) == (self._markdown_text, self._markdown_footer):
+    def set_markdown(self, text, *, footer_html="", reuse=False, trusted_figures=None):
+        trusted_figures = trusted_figures or {}
+        if reuse and (text, footer_html, tuple(trusted_figures)) == (
+                self._markdown_text, self._markdown_footer, tuple(self._trusted_figures)):
             return
         self._markdown_text = text
         self._markdown_footer = footer_html
+        self._trusted_figures = trusted_figures
+        self._figure_labels = {
+            'paperreader-figure:' + hashlib.sha256(token.encode()).hexdigest(): card[1]
+            for token, card in trusted_figures.items()
+        }
         scrollbar = self.verticalScrollBar()
         previous = scrollbar.value()
         following = previous == scrollbar.maximum()
@@ -212,23 +273,30 @@ class MarkdownBrowser(QTextBrowser):
 
     def html_fragment(self, text):
         pending = set()
-        def cached_formula(source):
-            if source not in self._formula_images:
-                pending.add(source)
+        math_font_px = 13 if self.reading_style else 14
+        def cached_formula(source, *, max_width=None):
+            key = (source, max_width)
+            if key not in self._formula_images:
+                pending.add(key)
                 raise LookupError(source)
-            image = self._formula_images[source]
+            image = self._formula_images[key]
             if image is None: raise ValueError(source)
             return image
-        result = markdown_html(text, self.math_resources, self.math_sources, self.viewport().width()-32,
-                               renderer=cached_formula if self.async_math else render_formula)
+        def direct_formula(source, *, max_width=None):
+            return render_formula(source, math_font_px, max_width)
+        available_width = min(self.width(), self.viewport().width()) - 32
+        result = markdown_html(text, self.math_resources, self.math_sources, available_width,
+                               renderer=cached_formula if self.async_math else
+                               direct_formula, trusted_figures=getattr(self, '_trusted_figures', {}))
         if pending and not self._math_running:
             self._math_running = True
             signal = self._math_result
             def work():
                 images = {}
-                for source in pending:
-                    try: images[source] = render_formula(source)
-                    except Exception: images[source] = None
+                for source, max_width in pending:
+                    key = (source, max_width)
+                    try: images[key] = render_formula(source, math_font_px, max_width)
+                    except Exception: images[key] = None
                 try: signal.ready.emit(images)
                 except RuntimeError: pass  # The window may have been closed.
             _math_executor.submit(work)
@@ -241,27 +309,59 @@ class MarkdownBrowser(QTextBrowser):
         if len(self._formula_images) > 512: self._formula_images = dict(images)
         self._render_math()
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, '_math_render_timer') and 'paperreader-flow' in self._markdown_text:
+            self._math_render_timer.start()
+
     def _render_math(self):
         if self.is_user_scrolling():
             self._math_render_timer.start()
             return
         if self.external_math: self.mathUpdated.emit()
-        else: self.set_markdown(self._markdown_text, footer_html=self._markdown_footer)
+        else: self.set_markdown(self._markdown_text, footer_html=self._markdown_footer,
+                                trusted_figures=self._trusted_figures)
 
 
     def format_reading_text(self):
         """Qt Markdown does not consistently apply CSS paragraph metrics; format blocks directly."""
         heading_background = get_theme(current_theme()).heading_background
         block = self.document().begin()
+        previous = None
+        figure_indent = None
         while block.isValid():
             cursor = QTextCursor(block)
             fmt = block.blockFormat()
             level = fmt.headingLevel()
+            is_figure = False
+            if block.text().startswith('\ufffc'):
+                image_cursor = QTextCursor(block)
+                image_cursor.movePosition(QTextCursor.MoveOperation.NextCharacter,
+                                          QTextCursor.MoveMode.KeepAnchor)
+                is_figure = image_cursor.charFormat().toImageFormat().name().startswith('paperreader-figure:')
+            if is_figure:
+                preceding = previous
+                while preceding is not None and preceding.text().strip() == '':
+                    preceding = preceding.previous() if preceding.previous().isValid() else None
+                if preceding is not None:
+                    text_list = preceding.textList()
+                    figure_indent = text_list.format().indent() if text_list else preceding.blockFormat().indent()
+                else:
+                    figure_indent = 0
+            if is_figure or (figure_indent is not None and block.text().strip() in self._figure_labels.values()):
+                fmt.setAlignment(Qt.AlignmentFlag.AlignLeft)
+                fmt.setIndent(figure_indent)
+                fmt.setLeftMargin(0)
+                fmt.setTextIndent(0)
+            elif figure_indent is not None:
+                figure_indent = None
             if not level and not block.textList() and block.text().strip().rstrip("：:") in _ANALYSIS_SECTION_LABELS:
                 level = 3
-            fmt.setLineHeight(140 if level else 150, QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
+            has_image = '\ufffc' in block.text()
+            fmt.setLineHeight(100 if has_image else (140 if level else 150),
+                              QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
             fmt.setTopMargin(14 if level and block.blockNumber() else 0)
-            fmt.setBottomMargin(6 if level else (4 if block.textList() else 9))
+            fmt.setBottomMargin(0 if has_image else (6 if level else (4 if block.textList() else 9)))
             if level and heading_background:
                 fmt.setBackground(QColor(heading_background))
                 fmt.setLeftMargin(8)
@@ -275,11 +375,12 @@ class MarkdownBrowser(QTextBrowser):
                 chars.setForeground(QColor(theme_color(ACCENT)))
             cursor.setPosition(block.position() + block.length() - 1, QTextCursor.MoveMode.KeepAnchor)
             cursor.mergeCharFormat(chars)
+            previous = block
             block = block.next()
 
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QTabWidget, QTextEdit
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QStackedWidget, QTextEdit, QPushButton, QFrame
 
 
 class ChatBrowser(MarkdownBrowser):
@@ -326,18 +427,46 @@ class MarkdownEditor(QWidget):
 
     def __init__(self, placeholder="", parent=None):
         super().__init__(parent)
+        self.setObjectName("MarkdownEditor")
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        self.tabs = QTabWidget()
+        layout.setContentsMargins(1, 1, 1, 1)
+        layout.setSpacing(0)
+        view_bar = QWidget()
+        view_bar.setObjectName("AnalysisViewBar")
+        view_layout = QHBoxLayout(view_bar)
+        view_layout.setContentsMargins(0, 0, 0, 0)
+        view_layout.setSpacing(0)
+        self.view_buttons = []
+        for index, label in enumerate(("Markdown 编辑", "预览")):
+            control = QPushButton(label)
+            control.setObjectName("AnalysisViewButton")
+            control.setProperty("analysisSide", "left" if index == 0 else "right")
+            control.setCheckable(True)
+            control.setFixedHeight(26)
+            control.clicked.connect(lambda checked=False, selected=index: self.tabs.setCurrentIndex(selected))
+            view_layout.addWidget(control, 1)
+            self.view_buttons.append(control)
+        layout.addWidget(view_bar)
+        self.tabs = QStackedWidget()
         self.source = QTextEdit()
+        self.source.setObjectName("NoteMarkdownSource")
+        self.source.setFrameShape(QFrame.Shape.NoFrame)
         self.source.setAcceptRichText(False)
         self.source.setPlaceholderText(placeholder)
         self.preview = MarkdownBrowser()
-        self.tabs.addTab(self.source, "Markdown 编辑")
-        self.tabs.addTab(self.preview, "预览")
+        self.preview.setObjectName("NoteMarkdownPreview")
+        self.preview.setFrameShape(QFrame.Shape.NoFrame)
+        self.tabs.addWidget(self.source)
+        self.tabs.addWidget(self.preview)
         layout.addWidget(self.tabs)
         self.source.textChanged.connect(self.changed)
         self.tabs.currentChanged.connect(self.refresh_visible_preview)
+        self.tabs.currentChanged.connect(self.sync_view_buttons)
+        self.sync_view_buttons(0)
+
+    def sync_view_buttons(self, index):
+        for position, control in enumerate(self.view_buttons):
+            control.setChecked(position == index)
 
     def changed(self):
         self.preview.set_markdown(self.toPlainText())

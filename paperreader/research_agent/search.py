@@ -1,12 +1,33 @@
 """External discovery providers. Evidence levels describe what was retrieved."""
 import json
+import re
+from time import monotonic
 from urllib.parse import quote_plus, urlsplit
 
 from paperreader.services.lazy import httpx, keyring
+from paperreader.logger import get_logger, preview, response_size
 
-SEARCH_ACCOUNTS = {"Bright Data": "search-brightdata", "OpenAlex": "search-openalex"}
+
+log = get_logger(__name__)
+
+SEARCH_ACCOUNTS = {"Bright Data": "search-brightdata"}
 BRIGHTDATA_ZONE_ACCOUNT = "search-brightdata-serp-zone"
 SEARCH_ENGINES = {"bing": "Bing", "google": "Google"}
+
+
+def _source_label(url):
+    """Keep diagnostic addresses useful without recording URL query credentials."""
+    try:
+        parsed = urlsplit(str(url or ""))
+    except ValueError:
+        return "无效地址"
+    return f"{parsed.netloc}{parsed.path}" if parsed.netloc else parsed.path or "未知地址"
+
+
+def _safe_error_message(exc):
+    message = str(exc)
+    message = re.sub(r"https?://[^\s'\"<>]+", lambda match: _source_label(match.group()), message)
+    return preview(message, 200)
 
 
 def search_key(provider):
@@ -35,12 +56,18 @@ def search_web(query, *, start=0, engine="bing"):
     url = f"https://www.{engine}.com/search?q={quote_plus(query)}&brd_json=1"
     if start:
         url += f"&{'first' if engine == 'bing' else 'start'}={start + 1 if engine == 'bing' else start}"
+    started = monotonic()
+    log.info("网页搜索请求：Bright Data，搜索引擎 {}，起点 {}，查询 {}", engine, start, preview(query, 200))
     response = httpx.post(
         "https://api.brightdata.com/request",
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
         json={"zone": zone, "url": url, "format": "json"},
         timeout=90,
     )
+    log.info("网页搜索 HTTP 响应：{}，{} 字节，用时 {:.2f} 秒", response.status_code,
+             response_size(response), monotonic() - started)
+    if type(response.status_code) is int and response.status_code >= 400:
+        log.warning("Bright Data 网页搜索返回 HTTP {}", response.status_code)
     response.raise_for_status()
     try:
         payload = response.json()
@@ -66,30 +93,12 @@ def search_web(query, *, start=0, engine="bing"):
             continue
         results.append(dict(kind="web", id=target, url=target, title=title,
                             level="搜索摘要", text=item.get("description") or item.get("snippet") or ""))
+    log.info("网页搜索返回：{} 条；前 3 项 {}", len(results),
+             [preview(item["title"], 100) for item in results[:3]])
+    for rank, item in enumerate(results, start=1):
+        log.debug("网页搜索候选：第 {} 条，站点 {}，标题 {}", rank,
+                  urlsplit(item["url"]).hostname, preview(item["title"], 160))
     return results
-
-
-def search_openalex(query):
-    key = search_key("OpenAlex")
-    if not key:
-        return []
-    response = httpx.get("https://api.openalex.org/works", timeout=8,
-                         params={"api_key": key, "search": query, "per-page": 5})
-    response.raise_for_status()
-    entries = []
-    for item in response.json().get("results", []):
-        title, url = item.get("title"), item.get("doi") or item.get("id")
-        if not title or not url:
-            continue
-        inverted = item.get("abstract_inverted_index") or {}
-        words = sorted((position, word) for word, positions in inverted.items() for position in positions)
-        pdf = (item.get("best_oa_location") or {}).get("pdf_url")
-        entries.append(dict(kind="academic", id=url.removeprefix("https://doi.org/"), title=title,
-                            url=url, pdf_urls=[pdf] if pdf else [],
-                            level="摘要" if words else "题录",
-                            text=" ".join(word for _, word in words)[:6000] or
-                                 str(item.get("publication_year") or "")))
-    return entries
 
 
 def read_public_source(entry, query, limit):
@@ -122,25 +131,36 @@ def read_public_source(entry, query, limit):
 
     urls = entry.get("pdf_urls", []) if entry["kind"] == "academic" else [entry["url"]]
     if not urls:
+        log.warning("公开资料未读取：没有可用原文地址，来源 {}，标题 {}", entry["kind"],
+                    preview(entry.get("title", ""), 100))
         return entry
     url = urls[0]
+    started = monotonic()
+    parsed = None
     try:
         parsed = urlsplit(url)
         if parsed.scheme not in ("https", "http") or not parsed.hostname or parsed.username or parsed.password:
+            log.warning("公开资料未读取：地址格式或凭证不受支持，地址 {}", _source_label(url))
             return entry
         if parsed.port not in (None, 80, 443):
+            log.warning("公开资料未读取：端口不受支持，地址 {}，端口 {}", _source_label(url), parsed.port)
             return entry
         if not all(ip_address(record[4][0]).is_global
                    for record in getaddrinfo(parsed.hostname, parsed.port or 443)):
+            log.warning("公开资料未读取：目标解析到非公网地址，地址 {}", _source_label(url))
             return entry
         limit.check()
+        log.info("公开资料请求 GET {}{}，来源 {}", parsed.netloc, parsed.path, entry["kind"])
         with httpx.stream("GET", url, timeout=4, follow_redirects=False, trust_env=False) as response:
+            log.info("公开资料 HTTP 响应：{}，类型 {}", response.status_code,
+                     response.headers.get("content-type", ""))
             response.raise_for_status()
             data = bytearray()
             for chunk in response.iter_bytes():
                 limit.check()
                 data.extend(chunk)
                 if len(data) > 6_000_000:
+                    log.warning("公开资料未读取：响应超过 6000000 字节，地址 {}", _source_label(url))
                     return entry
             encoding = response.encoding or "utf-8"
         if data.startswith(b"%PDF"):
@@ -152,8 +172,20 @@ def read_public_source(entry, query, limit):
             parser.feed(data.decode(encoding, errors="replace"))
             passages = [(None, part) for part in parser.parts]
         else:
+            log.warning("公开资料未读取：学术来源不是 PDF，地址 {}，类型 {}", _source_label(url),
+                        response.headers.get("content-type", ""))
             return entry
-    except (httpx.HTTPError, OSError, ValueError, RuntimeError, LookupError):
+    except (httpx.HTTPError, OSError, ValueError, RuntimeError, LookupError) as exc:
+        if isinstance(exc, httpx.HTTPStatusError):
+            failed = exc.response
+            log.warning("公开资料读取失败：HTTP {} {}，地址 {}，跳转地址 {}，用时 {:.2f} 秒",
+                        failed.status_code, failed.reason_phrase, _source_label(failed.url),
+                        _source_label(failed.headers.get("location")) if failed.headers.get("location") else "无",
+                        monotonic() - started)
+        else:
+            log.warning("公开资料读取失败：{}，地址 {}，详情 {}，用时 {:.2f} 秒",
+                        type(exc).__name__, _source_label(url), _safe_error_message(exc),
+                        monotonic() - started)
         return entry
     keywords = set(terms(query))
     ranked = []
@@ -164,10 +196,15 @@ def read_public_source(entry, query, limit):
             if score:
                 ranked.append((score, page, excerpt))
     if not ranked:
+        log.warning("公开资料未读取：已获取页面但未找到与查询匹配的段落，地址 {}，提取段落 {}，用时 {:.2f} 秒",
+                    _source_label(url), len(passages), monotonic() - started)
         return entry
     ranked.sort(key=lambda item: item[0], reverse=True)
     excerpts = [f"第 {page} 页：{excerpt}" if page else excerpt for _, page, excerpt in ranked[:2]]
-    return dict(entry, level="原文", text="\n\n".join(excerpts), original_url=url)
+    result = dict(entry, level="原文", text="\n\n".join(excerpts), original_url=url)
+    log.info("公开资料返回：{} 字节，{} 段原文，用时 {:.2f} 秒", len(data), len(excerpts),
+             monotonic() - started)
+    return result
 
 
 def retrieve_web_evidence(query, limit, emit, *, search=search_web, read=read_public_source):

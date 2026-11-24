@@ -1,9 +1,15 @@
 import asyncio
 import json
 import re
+from time import monotonic
 from urllib.parse import urlparse
+from uuid import uuid4
 from paperreader.services.lazy import httpx
-from .analysis import AnalysisStopped, input_limit, message_length
+from paperreader.logger import get_logger, preview
+from .analysis import AnalysisStopped
+
+
+log = get_logger(__name__)
 
 
 def pdf_url(value):
@@ -22,14 +28,25 @@ def pdf_url(value):
 
 def download(value):
     url = pdf_url(value)
-    with httpx.stream("GET", url, follow_redirects=True, timeout=60) as response:
-        response.raise_for_status()
-        data = bytearray()
-        for chunk in response.iter_bytes():
-            data.extend(chunk)
-            if len(data) > 100 * 1024 * 1024:
-                raise ValueError("文件超过首版 100 MB 下载上限。")
-    return bytes(data)
+    parsed = urlparse(url)
+    started = monotonic()
+    log.info("PDF 请求 GET {}{}，超时 60 秒", parsed.netloc, parsed.path)
+    try:
+        with httpx.stream("GET", url, follow_redirects=True, timeout=60) as response:
+            log.info("PDF 响应 HTTP {}，类型 {}，最终地址 {}{}", response.status_code,
+                     response.headers.get("content-type", ""), response.url.host, response.url.path)
+            response.raise_for_status()
+            data = bytearray()
+            for chunk in response.iter_bytes():
+                data.extend(chunk)
+                if len(data) > 100 * 1024 * 1024:
+                    raise ValueError("文件超过首版 100 MB 下载上限。")
+        log.info("PDF 下载完成：{} 字节，PDF 标记 {}，用时 {:.2f} 秒",
+                 len(data), data[:5] == b"%PDF-", monotonic() - started)
+        return bytes(data)
+    except Exception:
+        log.error("PDF 下载失败：{}{}", parsed.netloc, parsed.path, exc_info=True)
+        raise
 
 
 def api_error_message(status):
@@ -54,13 +71,16 @@ def client_options(url):
     return {"timeout": 180, "trust_env": urlparse(url).scheme == "https"}
 
 
-async def cancellable_stream(url, headers, payload, consume, cancel):
+async def cancellable_stream(url, headers, payload, consume, cancel, request_id=""):
     async def read():
         async with httpx.AsyncClient(**client_options(url)) as client:
             request_payload = payload
             while True:
                 async with client.stream("POST", url, headers=headers, json=request_payload) as response:
+                    log.info("模型请求 {} HTTP 响应：{}，类型 {}", request_id, response.status_code,
+                             response.headers.get("content-type", ""))
                     if response.status_code in (400, 422) and "stream_options" in request_payload:
+                        log.warning("模型请求 {} 不支持 stream_options，重试兼容格式", request_id)
                         request_payload = {key: value for key, value in request_payload.items()
                                            if key != "stream_options"}
                         continue
@@ -91,8 +111,6 @@ async def cancellable_stream(url, headers, payload, consume, cancel):
 
 
 def complete(config, key, messages, on_chunk=None, *, cancel=None, on_usage=None):
-    if message_length(messages) > input_limit(config):
-        raise ValueError("请求文本超过此模型的最大输入长度，请调高上限或缩短问题/选区。")
     endpoint = config["endpoint"].strip().rstrip("/")
     parsed = urlparse(endpoint)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
@@ -102,6 +120,14 @@ def complete(config, key, messages, on_chunk=None, *, cancel=None, on_usage=None
     headers = {"Authorization": "Bearer " + key} if key else {}
     payload = {"model": config["model"], "messages": messages}
     url = endpoint + "/chat/completions"
+    request_id = uuid4().hex[:8]
+    started = monotonic()
+    log.info("模型请求 {} POST {}{}，模型 {}，消息 {} 条，流式 {}", request_id,
+             parsed.netloc, parsed.path + "/chat/completions", config["model"],
+             len(messages), on_chunk is not None)
+    log.debug("模型请求 {} 内容预览：{}", request_id,
+              [{"role": item.get("role"), "chars": len(str(item.get("content", ""))),
+                "preview": preview(item.get("content", ""), 300)} for item in messages[-6:]])
     if on_chunk is not None:
         payload["stream"] = True
         if on_usage is not None:
@@ -124,6 +150,7 @@ def complete(config, key, messages, on_chunk=None, *, cancel=None, on_usage=None
             if "error" in event:
                 raise ValueError("模型流返回错误，请检查服务状态后重试。")
             if on_usage is not None and isinstance(event.get("usage"), dict):
+                log.info("模型请求 {} 用量：{}", request_id, event["usage"])
                 on_usage(event["usage"])
             for choice in event.get("choices", []):
                 if choice.get("index", 0) != 0:
@@ -140,10 +167,13 @@ def complete(config, key, messages, on_chunk=None, *, cancel=None, on_usage=None
             return False
 
         if cancel is not None:
-            asyncio.run(cancellable_stream(url, headers, payload, consume, cancel))
+            asyncio.run(cancellable_stream(url, headers, payload, consume, cancel, request_id))
         else:
             with httpx.Client(**client_options(url)) as client, client.stream("POST", url, headers=headers, json=payload) as response:
+                log.info("模型请求 {} HTTP 响应：{}，类型 {}", request_id, response.status_code,
+                         response.headers.get("content-type", ""))
                 if response.is_error:
+                    log.warning("模型请求 {} 返回 HTTP {}", request_id, response.status_code)
                     raise ValueError(api_error_message(response.status_code))
                 for line in response.iter_lines():
                     if consume(line):
@@ -154,12 +184,18 @@ def complete(config, key, messages, on_chunk=None, *, cancel=None, on_usage=None
     else:
         with httpx.Client(**client_options(url)) as client:
             response = client.post(url, headers=headers, json=payload)
+            log.info("模型请求 {} HTTP 响应：{}，类型 {}", request_id, response.status_code,
+                     response.headers.get("content-type", ""))
             if response.is_error:
+                log.warning("模型请求 {} 返回 HTTP {}", request_id, response.status_code)
                 raise ValueError(api_error_message(response.status_code))
             result = response.json()
             if on_usage is not None and isinstance(result.get("usage"), dict):
+                log.info("模型请求 {} 用量：{}", request_id, result["usage"])
                 on_usage(result["usage"])
             text = result["choices"][0]["message"]["content"]
     if not isinstance(text, str) or not text.strip():
         raise ValueError("模型没有返回文本。")
+    log.info("模型请求 {} 完成：{} 字符，用时 {:.2f} 秒", request_id, len(text), monotonic() - started)
+    log.debug("模型请求 {} 返回内容预览：{}", request_id, preview(text, 1200))
     return text

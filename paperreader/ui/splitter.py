@@ -102,3 +102,47 @@ class PaneSplitter(QSplitter):
             sizes[index] = restored
         self.setSizes(sizes)
         self.paneToggled.emit(index)
+
+
+class ChatResizeHandle(QSplitterHandle):
+    """A vertical drag grip without the pane-toggle behavior of PaneHandle."""
+
+    def __init__(self, orientation, parent):
+        super().__init__(orientation, parent)
+        self.setCursor(Qt.CursorShape.SplitVCursor)
+        self.setToolTip("上下拖动以调整追问输出和输入区的高度")
+        self.setAccessibleName("追问区域高度调节")
+
+    def mouseDoubleClickEvent(self, event):
+        event.accept()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.splitter().resizeStarted.emit()
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.splitter().resizeFinished.emit()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(theme_color('#131e2b')))
+        painter.setPen(QColor(theme_color('#567089')))
+        center = self.rect().center()
+        painter.drawLine(center.x() - 18, center.y(), center.x() + 18, center.y())
+
+
+class ChatVerticalSplitter(QSplitter):
+    resizeStarted = Signal()
+    resizeFinished = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(Qt.Orientation.Vertical, parent)
+        self.setObjectName("ChatVerticalSplitter")
+        self.setHandleWidth(10)
+        self.setChildrenCollapsible(False)
+
+    def createHandle(self):
+        return ChatResizeHandle(self.orientation(), self)

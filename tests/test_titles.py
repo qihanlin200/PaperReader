@@ -25,3 +25,21 @@ class TitleTests(unittest.TestCase):
             self.assertEqual(restored['title'], 'Recovered Title')
             self.assertEqual(restored['notes'], 'keep notes')
             lib.db.close()
+
+    def test_split_span_title_repair_preserves_manual_titles_and_notes(self):
+        with tempfile.TemporaryDirectory() as root:
+            lib = Library(root)
+            doc = fitz.open()
+            doc.new_page().insert_text((72, 80), 'AUTOMATED DESIGN OF AGENTIC SYSTEMS', fontsize=20)
+            paper = lib.import_pdf(doc.tobytes(), '2408.08435')
+            doc.close()
+            paper['title'] = 'A UTOMATED D ESIGN OF A GENTIC S YSTEMS'
+            paper['notes'] = 'do not change'
+            lib.save(paper)
+            restored = lib.get(paper['id'])
+            self.assertEqual(restored['title'], 'AUTOMATED DESIGN OF AGENTIC SYSTEMS')
+            self.assertEqual(restored['notes'], 'do not change')
+            restored['title'] = 'A STUDY OF A SYSTEM'
+            lib.save(restored)
+            self.assertEqual(lib.get(paper['id'])['title'], 'A STUDY OF A SYSTEM')
+            lib.db.close()

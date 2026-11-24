@@ -3,9 +3,14 @@ from collections import deque
 from html import unescape
 from html.parser import HTMLParser
 import re
+from time import monotonic
 from urllib.parse import quote, urljoin, urlsplit
 
 from .lazy import fitz, httpx
+from paperreader.logger import get_logger, preview, response_size
+
+
+log = get_logger(__name__)
 
 MAX_PDF_BYTES = 32 * 1024 * 1024
 MAX_HTML_BYTES = 2 * 1024 * 1024
@@ -155,15 +160,24 @@ def read_pdf_or_page(response, progress=None):
 def download_citation_pdf(source, *, progress=None):
     doi = source["id"]
     candidates = list(source.get("pdf_urls", []))
+    log.info("引文 PDF 获取开始：{}，候选 {} 条", preview(doi, 120), len(candidates))
     if doi.lower().startswith("10.48550/arxiv."):
         candidates.insert(0, "https://arxiv.org/pdf/" + quote(doi[len("10.48550/arxiv."):], safe="/"))
     with httpx.Client(timeout=5, follow_redirects=True, max_redirects=5) as client:
         if not candidates:
             try:
+                started = monotonic()
+                log.info("引文元数据请求：Crossref {}", preview(doi, 120))
                 response = client.get("https://api.crossref.org/works/" + quote(doi, safe="/"))
+                log.info("引文元数据 HTTP 响应：{}，{} 字节，用时 {:.2f} 秒",
+                         response.status_code, response_size(response), monotonic() - started)
+                if type(response.status_code) is int and response.status_code >= 400:
+                    log.warning("引文元数据返回 HTTP {}", response.status_code)
                 response.raise_for_status()
                 candidates.extend(pdf_links(response.json()["message"]))
-            except (httpx.HTTPError, ValueError, KeyError, TypeError):
+                log.info("引文元数据返回：{} 条 PDF 候选", len(candidates))
+            except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+                log.warning("引文元数据获取失败：{}", type(exc).__name__)
                 pass
         candidates = list(dict.fromkeys(candidates))[:3]
         pending = deque((url, "", 0) for url in dict.fromkeys([*candidates, source["url"]]))
@@ -179,21 +193,32 @@ def download_citation_pdf(source, *, progress=None):
             if referer:
                 headers["Referer"] = referer
             try:
+                started = monotonic()
+                parsed = urlsplit(url)
+                log.info("引文 PDF 请求 GET {}{}，深度 {}", parsed.netloc, parsed.path, depth)
                 with client.stream("GET", url, headers=headers) as response:
+                    log.info("引文 PDF HTTP 响应：{}，类型 {}，用时 {:.2f} 秒",
+                             response.status_code, response.headers.get("content-type", ""),
+                             monotonic() - started)
                     if response.status_code in (401, 403, 429):
                         blocked = True
                     response.raise_for_status()
                     data, discovered = read_pdf_or_page(response, progress)
                     if data is not None:
+                        log.info("引文 PDF 返回：{} 字节，来源 {}{}", len(data), parsed.netloc, parsed.path)
                         return data
+                    log.info("引文页面返回：发现 {} 条 PDF 链接", len(discovered))
                     if depth < 2:
                         for target in reversed(discovered):
                             if target not in visited:
                                 pending.appendleft((target, str(response.url), depth + 1))
             except PDFDownloadBlocked:
+                log.warning("引文 PDF 页面访问受限：{}{}", parsed.netloc, parsed.path)
                 blocked = True
-            except (httpx.HTTPError, RuntimeError, ValueError, OSError):
+            except (httpx.HTTPError, RuntimeError, ValueError, OSError) as exc:
+                log.warning("引文 PDF 请求失败：{}，{}{}", type(exc).__name__, parsed.netloc, parsed.path)
                 continue
         if blocked:
             raise PDFDownloadBlocked()
+    log.info("引文 PDF 获取结束：未找到可用文件，已访问 {} 个地址", len(visited))
     return None

@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from paperreader.services.themes import get_theme
+from paperreader.logger import get_logger
 from paperreader.services.lazy import fitz, keyring
 from paperreader.research_agent import CITATION, RunLimit, execute, expand_mindmap, space_title
 from paperreader.services.research_pdf import PDFDownloadBlocked, download_citation_pdf
@@ -36,6 +37,9 @@ from paperreader.ui.research_trace import ResearchTrace
 from paperreader.ui.theme import current_theme, theme_color
 from paperreader.ui.row_hover import RowHoverDelegate
 from paperreader.ui.work_rail import menu_symbol_icon
+
+
+log = get_logger(__name__)
 
 
 class ScrollTextCard(QFrame):
@@ -206,6 +210,7 @@ class MindmapJob(QRunnable):
             result = expand_mindmap(self.run_record["answer"], self.config, self.key, self.limit)
             error = ""
         except Exception:
+            log.error("研究脑图生成失败", exc_info=True)
             result = None
             error = "完整脑图生成失败，可重试。"
         self.events.update.emit("mindmap", (self.run_record, result, error))
@@ -229,8 +234,10 @@ class ResearchPDFJob(QRunnable):
             else:
                 data = self.load()
         except PDFDownloadBlocked:
+            log.warning("研究论文 PDF 下载受限")
             data = "blocked"
         except Exception:
+            log.error("研究论文 PDF 下载失败", exc_info=True)
             data = None
         self.events.update.emit("pdf", (self.token, self.source, self.local, data))
 
@@ -256,6 +263,7 @@ class ResearchWorkspace(QWidget):
         self.spaces = json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else []
         self.active = None
         self.detail_run = None
+        self.previewed_source_id = None
         self.expanded_trace = set()
         self.conclusion_cache = {}
         self.drafts = {}
@@ -314,6 +322,8 @@ class ResearchWorkspace(QWidget):
         self.sources.setObjectName("ResearchSourceList")
         self.sources.setItemDelegate(RowHoverDelegate(self.sources))
         self.sources.itemDoubleClicked.connect(self.preview_source)
+        self.sources.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.sources.customContextMenuRequested.connect(self.source_menu)
         knowledge.addWidget(self.sources, 1)
         left_layout.addWidget(self.knowledge, 2)
         left_layout.addStretch()
@@ -367,8 +377,7 @@ class ResearchWorkspace(QWidget):
         task_row.setSpacing(10)
         self.task_trace = QLabel()
         self.task_trace.setTextFormat(Qt.TextFormat.RichText)
-        self.task_trace.setTextInteractionFlags(Qt.TextInteractionFlag.LinksAccessibleByMouse |
-                                                Qt.TextInteractionFlag.LinksAccessibleByKeyboard)
+        self.task_trace.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
         self.task_trace.linkActivated.connect(lambda target: self.open_detail(QUrl(target)))
         target = QLabel()
         target.setPixmap(menu_symbol_icon("target").pixmap(20, 20))
@@ -386,18 +395,21 @@ class ResearchWorkspace(QWidget):
         self.task_title.setObjectName("ResearchTaskTitle")
         self.task_title.setTextFormat(Qt.TextFormat.PlainText)
         self.task_title.setWordWrap(True)
+        self.task_title.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse |
+                                                Qt.TextInteractionFlag.TextSelectableByKeyboard)
         task_layout.addWidget(self.task_title)
         self.task_subtitle = QLabel()
         self.task_subtitle.setObjectName("ResearchTaskSubtitle")
         self.task_subtitle.setTextFormat(Qt.TextFormat.PlainText)
         self.task_subtitle.setWordWrap(True)
+        self.task_subtitle.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse |
+                                                   Qt.TextInteractionFlag.TextSelectableByKeyboard)
         task_layout.addWidget(self.task_subtitle)
         self.task_steps = ResearchProgress()
         task_layout.addWidget(self.task_steps)
         self.task_actions = QLabel()
         self.task_actions.setTextFormat(Qt.TextFormat.RichText)
-        self.task_actions.setTextInteractionFlags(Qt.TextInteractionFlag.LinksAccessibleByMouse |
-                                                  Qt.TextInteractionFlag.LinksAccessibleByKeyboard)
+        self.task_actions.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
         self.task_actions.linkActivated.connect(lambda target: self.open_detail(QUrl(target)))
         task_layout.addWidget(self.task_actions)
         discussion.addWidget(self.task_header, 0, 0, 1, 2)
@@ -414,8 +426,7 @@ class ResearchWorkspace(QWidget):
         self.discussion_summary = QLabel()
         self.discussion_summary.setWordWrap(True)
         self.discussion_summary.setTextFormat(Qt.TextFormat.RichText)
-        self.discussion_summary.setTextInteractionFlags(Qt.TextInteractionFlag.LinksAccessibleByMouse |
-                                                        Qt.TextInteractionFlag.LinksAccessibleByKeyboard)
+        self.discussion_summary.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
         self.discussion_summary.linkActivated.connect(lambda url: self.open_detail(QUrl(url)))
         self.discussion_summary_card = self.discussion_card("target", "任务总结", self.discussion_summary)
         discussion.addWidget(self.discussion_summary_card, 3, 0, 1, 2)
@@ -495,7 +506,7 @@ class ResearchWorkspace(QWidget):
         self.academic = QPushButton("论文检索")
         self.academic.setObjectName("ResearchSearchToggle")
         self.academic.setCheckable(True)
-        self.academic.setToolTip("检索 OpenAlex 和 Crossref 论文资料。")
+        self.academic.setToolTip("检索 Crossref 论文资料。")
         self.composer.footer_layout.addWidget(self.academic)
         self.web_search = QPushButton("网页搜索")
         self.web_search.setObjectName("ResearchSearchToggle")
@@ -611,6 +622,7 @@ class ResearchWorkspace(QWidget):
             self.tabs.setCurrentWidget(pane)
 
     def close_detail(self):
+        self.previewed_source_id = None
         for index in reversed(range(self.tabs.count())):
             pane = self.tabs.widget(index)
             if pane.property("traceModel"):
@@ -853,6 +865,40 @@ class ResearchWorkspace(QWidget):
                 item = QListWidgetItem(menu_symbol_icon(icon), source["title"], self.sources)
                 item.setToolTip(source["title"])
 
+    def source_menu(self, point):
+        item = self.sources.itemAt(point)
+        if item is None or self.selected() is None:
+            return
+        self.sources.setCurrentItem(item)
+        menu = self.build_source_menu(item)
+        menu.exec(self.sources.viewport().mapToGlobal(point))
+        menu.deleteLater()
+
+    def build_source_menu(self, item):
+        index = self.sources.row(item)
+        menu = QMenu(self.sources)
+        remove = menu.addAction("从知识库移出", lambda: self.remove_source(index))
+        remove.setToolTip("只移出当前课题的知识库；本地文件、论文库和历史记录保留")
+        remove.setEnabled(not self.active or self.active[0] is not self.selected())
+        return menu
+
+    def remove_source(self, index):
+        space = self.selected()
+        if space is None or (self.active and self.active[0] is space):
+            return False
+        if not 0 <= index < len(space["sources"]):
+            return False
+        source = space["sources"].pop(index)
+        if not self.save():
+            space["sources"].insert(index, source)
+            return False
+        if self.previewed_source_id == source["id"]:
+            self.close_detail()
+        self.refresh_sources()
+        self.render()
+        self.window.statusBar().showMessage(f"已将「{source['title']}」从当前课题知识库移出；本地文件保留。", 5000)
+        return True
+
     def import_papers(self):
         space = self.selected()
         if not space:
@@ -944,8 +990,10 @@ class ResearchWorkspace(QWidget):
         source = self.selected()["sources"][self.sources.row(item)]
         self.detail_run = None
         if source["kind"] == "paper":
+            self.previewed_source_id = None
             self.window.open_research_paper(source["id"])
         else:
+            self.previewed_source_id = source["id"]
             self.trace.show_events("", "", [])
             self.content.show_text(source["title"], source["text"], "文本")
             self.select_detail_tab(self.content)
@@ -1367,6 +1415,8 @@ class ResearchWorkspace(QWidget):
                 question.setTextFormat(Qt.TextFormat.PlainText)
                 question.setWordWrap(True)
                 question.setIndent(0)
+                question.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse |
+                                                 Qt.TextInteractionFlag.TextSelectableByKeyboard)
                 layout.addWidget(question, 0, Qt.AlignmentFlag.AlignRight)
                 agent = QHBoxLayout()
                 agent.setSpacing(12)
@@ -1384,9 +1434,7 @@ class ResearchWorkspace(QWidget):
                 reply = WrappedOverviewLabel()
                 reply.setTextFormat(Qt.TextFormat.RichText)
                 reply.setWordWrap(True)
-                reply.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse |
-                                              Qt.TextInteractionFlag.LinksAccessibleByMouse |
-                                              Qt.TextInteractionFlag.LinksAccessibleByKeyboard)
+                reply.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
                 reply.linkActivated.connect(lambda target: self.open_detail(QUrl(target)))
                 content.addWidget(reply)
                 card.semantic_layout = QVBoxLayout()
@@ -1542,6 +1590,8 @@ class ResearchWorkspace(QWidget):
                     source_label = QLabel("证据来源 " + " ".join(cited_sources))
                     source_label.setObjectName("ResearchLayoutSource")
                     source_label.setWordWrap(True)
+                    source_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse |
+                                                         Qt.TextInteractionFlag.TextSelectableByKeyboard)
                     body.addWidget(source_label)
                 if component != "Tabs" and (title or component in ("List", "Timeline")):
                     prefix = f"{number}. " if component in ("List", "Timeline") and not original_heading else ""
@@ -1549,6 +1599,8 @@ class ResearchWorkspace(QWidget):
                     heading_label.setTextFormat(Qt.TextFormat.PlainText)
                     heading_label.setWordWrap(True)
                     heading_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+                    heading_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse |
+                                                          Qt.TextInteractionFlag.TextSelectableByKeyboard)
                     body.addWidget(heading_label)
                 body.addWidget(render_text(markdown, scroll_style=scroll_style))
                 if component == "Tabs":
@@ -1778,6 +1830,7 @@ class ResearchWorkspace(QWidget):
             self.show_detail((run, int(reference) if reference.isdigit() else None, None), pane)
 
     def show_detail(self, selection, pane):
+        self.previewed_source_id = None
         if self.detail_run != selection:
             self.subtask_cache = None
             self.subtask_timer.stop()

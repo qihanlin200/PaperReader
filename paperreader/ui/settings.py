@@ -8,14 +8,14 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QSignalBlocker
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
+    QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame,
     QHBoxLayout, QLabel, QLineEdit, QListView, QListWidget, QMessageBox,
     QPushButton, QSpinBox, QStackedWidget, QVBoxLayout, QWidget,
 )
 
-from paperreader.services.analysis import input_limit
 from paperreader.services.lazy import keyring
 from paperreader.services.network import complete
+from paperreader.logger import configure_logging, export_logs, limits
 from paperreader.services.profiles import (
     active_profile, export_profiles, import_profiles, new_profile,
 )
@@ -42,7 +42,14 @@ class SettingsDialog(QDialog):
 def open_settings(window):
     """Show general settings and lazily build the model editor."""
 
-    dialog = SettingsDialog(window)
+    existing = getattr(window, "_settings_dialog", None)
+    if existing is not None and existing.isVisible():
+        existing.raise_()
+        existing.activateWindow()
+        return existing
+
+    dialog = SettingsDialog()
+    window._settings_dialog = dialog
     dialog.setWindowTitle("系统设置")
     dialog.resize(1000, 570)
     dialog.setMinimumWidth(820)
@@ -73,6 +80,61 @@ def open_settings(window):
     theme_picker.setCurrentIndex(theme_picker.findData(window.profile_config["theme"]))
     appearance.addRow("界面主题", theme_picker)
     general_layout.addLayout(appearance)
+    divider = QFrame()
+    divider.setObjectName("SettingsDivider")
+    divider.setFrameShape(QFrame.Shape.HLine)
+    general_layout.addWidget(divider)
+    general_layout.addWidget(settings_heading("日志"))
+    stored_logs = window.library.config()
+    try:
+        initial_size, initial_days = limits(stored_logs.get("log_size_mb", 10),
+                                            stored_logs.get("log_retention_days", 14))
+    except ValueError:
+        initial_size, initial_days = 10, 14
+    log_form = QFormLayout()
+    log_size = QSpinBox()
+    log_size.setObjectName("LogSizeMb")
+    log_size.setRange(1, 100)
+    log_size.setSuffix(" MB")
+    log_size.setValue(initial_size)
+    log_days = QSpinBox()
+    log_days.setObjectName("LogRetentionDays")
+    log_days.setRange(1, 90)
+    log_days.setSuffix(" 天")
+    log_days.setValue(initial_days)
+    log_form.addRow("日志总大小上限", log_size)
+    log_form.addRow("日志保留周期", log_days)
+    actions = QHBoxLayout()
+    save_logs = QPushButton("保存日志设置")
+    export_button = QPushButton("导出全部日志")
+    actions.addWidget(save_logs)
+    actions.addWidget(export_button)
+    actions.addStretch()
+    log_form.addRow(actions)
+    general_layout.addLayout(log_form)
+
+    def save_log_settings():
+        try:
+            size_mb, days = limits(log_size.value(), log_days.value())
+            window.library.save_config(dict(window.library.config(), log_size_mb=size_mb,
+                                            log_retention_days=days))
+            configure_logging(window.library.root, size_mb=size_mb, retention_days=days)
+            window.statusBar().showMessage("日志设置已保存", 3000)
+        except (OSError, ValueError) as exc:
+            window.error("日志设置保存失败：" + str(exc))
+
+    def export_all_logs():
+        path, _ = QFileDialog.getSaveFileName(dialog, "导出全部日志", "PaperReader-日志.zip", "ZIP 文件 (*.zip)")
+        if not path:
+            return
+        try:
+            count = export_logs(path)
+            window.statusBar().showMessage(f"已导出 {count} 个日志文件", 5000)
+        except (OSError, ValueError, RuntimeError) as exc:
+            window.error("日志导出失败：" + str(exc))
+
+    save_logs.clicked.connect(save_log_settings)
+    export_button.clicked.connect(export_all_logs)
     general_layout.addStretch()
     close = QPushButton("关闭")
     close.clicked.connect(dialog.reject)
@@ -145,7 +207,7 @@ def open_settings(window):
         window.statusBar().showMessage("搜索引擎设置已保存", 3000)
 
     engine_picker.currentIndexChanged.connect(save_search_engine)
-    search_layout.addWidget(QLabel("Bright Data SERP 用于网页搜索，需配置 API Key 和 SERP Zone；OpenAlex 用于论文发现。"))
+    search_layout.addWidget(QLabel("Bright Data SERP 用于网页搜索，需配置 API Key 和 SERP Zone；论文检索使用 Crossref。"))
     search_layout.addWidget(QLabel("可选 Google 或 Bing；其他受支持引擎暂不提供研究引用所需的结构化 JSON。"))
     search_layout.addStretch()
     close_search = QPushButton("关闭")
@@ -178,8 +240,19 @@ def open_settings(window):
     theme_picker.currentIndexChanged.connect(choose_theme)
     navigation.currentRowChanged.connect(show_page)
     navigation.setCurrentRow(0)
-    if dialog.exec() and save_model:
-        save_model()
+
+    def finish(result):
+        try:
+            if result and save_model:
+                save_model()
+        finally:
+            if getattr(window, "_settings_dialog", None) is dialog:
+                window._settings_dialog = None
+            dialog.deleteLater()
+
+    dialog.finished.connect(finish)
+    dialog.show()
+    return dialog
 
 
 def settings_heading(text):
@@ -207,10 +280,6 @@ def build_model_settings(window, dialog, form, job_type):
     actions.addWidget(add); actions.addWidget(remove)
     form.addRow("已保存模型", picker); form.addRow(actions); form.addRow("配置名称", name)
     form.addRow("API 基础地址（包含 /v1）", endpoint); form.addRow("模型名称", model); form.addRow("API Key", key)
-    limit = QSpinBox(); limit.setObjectName("MaxInputChars"); limit.setRange(4096, 2000000); limit.setSingleStep(4096)
-    limit.setValue(input_limit(window.config)); limit.setSuffix(" 字符")
-    form.addRow("最大输入长度", limit)
-    form.addRow(QLabel("按请求全部文本字符计（含提示词和历史），不是 Token；请低于服务商上下文上限并预留输出空间。"))
     buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
     buttons.accepted.connect(dialog.accept); buttons.rejected.connect(dialog.reject)
     import_button = QPushButton("导入配置"); import_button.setObjectName("ImportModelConfig")
@@ -223,12 +292,12 @@ def build_model_settings(window, dialog, form, job_type):
     form.addRow(test); form.addRow(status)
     def stash():
         profile = draft["profiles"][selected[0]]
-        profile.update(name=name.text().strip() or "未命名模型", endpoint=endpoint.text().strip(), model=model.text().strip(), max_input_chars=limit.value())
+        profile.update(name=name.text().strip() or "未命名模型", endpoint=endpoint.text().strip(), model=model.text().strip())
         secrets[profile["id"]] = key.text()
         picker.setItemText(selected[0], profile["name"])
     def show_profile(index):
         selected[0] = index; profile = draft["profiles"][index]
-        name.setText(profile["name"]); endpoint.setText(profile["endpoint"]); model.setText(profile["model"]); limit.setValue(input_limit(profile))
+        name.setText(profile["name"]); endpoint.setText(profile["endpoint"]); model.setText(profile["model"])
         try:
             secret = secrets.get(profile["id"])
             if secret is None: secret = keyring.get_password("PaperReader", profile["key_account"]) or ""
@@ -305,10 +374,10 @@ def build_model_settings(window, dialog, form, job_type):
             window.error("导出配置失败：" + str(exc))
     import_button.clicked.connect(import_config); export_button.clicked.connect(export_config)
     def test_connection():
-        config = {"endpoint": endpoint.text().strip(), "model": model.text().strip(), "max_input_chars": limit.value()}
+        config = {"endpoint": endpoint.text().strip(), "model": model.text().strip()}
         secret = key.text()
         test.setEnabled(False); buttons.setEnabled(False); dialog.testing = True
-        for widget in (picker, add, remove, import_button, export_button, name, endpoint, model, key, limit): widget.setEnabled(False)
+        for widget in (picker, add, remove, import_button, export_button, name, endpoint, model, key): widget.setEnabled(False)
         status.set_markdown("正在测试流式 Chat Completions 接口…")
         job = job_type(lambda emit: complete(config, secret, [{"role": "user", "content": "Reply only OK."}], on_chunk=emit), streaming=True)
         chunks = []
@@ -318,7 +387,7 @@ def build_model_settings(window, dialog, form, job_type):
         dialog.test_job = job
         def finished(message):
             test.setEnabled(True); buttons.setEnabled(True); dialog.testing = False
-            for widget in (picker, add, remove, import_button, export_button, name, endpoint, model, key, limit): widget.setEnabled(True)
+            for widget in (picker, add, remove, import_button, export_button, name, endpoint, model, key): widget.setEnabled(True)
             status.set_markdown(message)
         job.signals.done.connect(lambda text: finished("**连接成功**：模型已返回流式文本响应。\n\n" + text))
         job.signals.error.connect(lambda text: finished("连接失败：" + text))
@@ -332,6 +401,8 @@ def build_model_settings(window, dialog, form, job_type):
             for profile in draft["profiles"]:
                 if profile["id"] in secrets:
                     keyring.set_password("PaperReader", profile["key_account"], secrets[profile["id"]])
+            draft.update({key: value for key, value in window.library.config().items()
+                          if key not in ('profiles', 'active_id', 'endpoint', 'model', 'theme', 'max_input_chars')})
             window.library.save_config(draft)
             old_profiles = window.profile_config["profiles"]
             window.profile_config = draft; window.config = active_profile(draft); window.refresh_models()

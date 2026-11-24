@@ -233,16 +233,14 @@ def draw_naruto_symbol(painter, symbol):
         painter.drawLine(7, 21, 19, 21)
         painter.drawLine(4, 12, 7, 15); painter.drawLine(22, 12, 19, 15)
     elif symbol == "settings":
-        # Settings: a kunai, the distinct ninja tool for configuration.
-        painter.drawEllipse(QRectF(2, 2, 7, 7))
-        painter.drawLine(8, 8, 13, 13)
-        painter.drawLine(10, 10, 8, 12)
-        painter.drawLine(12, 12, 10, 14)
-        blade = QPainterPath(QPointF(13, 13))
-        blade.lineTo(23, 11); blade.lineTo(20, 21)
-        blade.lineTo(13, 13)
+        # Restore the original four-point shuriken for system settings.
+        blade = QPainterPath(QPointF(13, 2))
+        blade.quadTo(16, 10, 24, 13)
+        blade.quadTo(16, 16, 13, 24)
+        blade.quadTo(10, 16, 2, 13)
+        blade.quadTo(10, 10, 13, 2)
         painter.drawPath(blade)
-        painter.drawLine(13, 13, 19, 17)
+        painter.drawEllipse(QRectF(10, 10, 6, 6))
 
 
 def draw_naruto_topic(painter):

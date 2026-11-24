@@ -16,14 +16,14 @@ class ProfileTests(unittest.TestCase):
 
     def test_portable_export_import_omits_keys_by_default(self):
         first, second = new_profile(), new_profile()
-        first.update(name='主要', endpoint='http://localhost:8000/v1', model='local', max_input_chars=64000)
+        first.update(name='主要', endpoint='http://localhost:8000/v1', model='local')
         second.update(name='备用', endpoint='https://example.org/v1', model='remote')
         document = export_profiles({'profiles': [first, second], 'active_id': second['id']})
         self.assertNotIn('api_key', str(document))
         self.assertNotIn(first['id'], str(document))
         self.assertNotIn('key_account', str(document))
         profiles, active_id, secrets = import_profiles(document)
-        self.assertEqual(profiles[0]['max_input_chars'], 64000)
+        self.assertNotIn('max_input_chars', profiles[0])
         self.assertEqual(active_id, profiles[1]['id'])
         self.assertNotEqual(profiles[0]['id'], first['id'])
         self.assertEqual(secrets, {})
@@ -34,6 +34,14 @@ class ProfileTests(unittest.TestCase):
         profiles, active_id, secrets = import_profiles(document)
         self.assertEqual(secrets[active_id], 'example-secret')
         self.assertNotEqual(profiles[0]['key_account'], profile['key_account'])
+
+    def test_old_input_limit_is_ignored_when_importing(self):
+        profile = new_profile()
+        document = export_profiles({'profiles': [profile], 'active_id': profile['id']})
+        document['profiles'][0]['max_input_chars'] = 50000
+        profiles, _, _ = import_profiles(document)
+        self.assertNotIn('max_input_chars', profiles[0])
+        self.assertNotIn('max_input_chars', export_profiles({'profiles': profiles, 'active_id': profiles[0]['id']})['profiles'][0])
 
     def test_import_rejects_invalid_file(self):
         profile = new_profile()

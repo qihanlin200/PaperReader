@@ -126,6 +126,7 @@ class ThemeHeader(QWidget):
         self.animation_path = None
         self.banner_movie = None
         self.banner_movie_path = None
+        self._blended_animation = None
 
     def set_animation(self, path, banner_path=None):
         if banner_path != self.banner_movie_path:
@@ -147,6 +148,7 @@ class ThemeHeader(QWidget):
         if path == self.animation_path:
             return
         self.animation_path = path
+        self._blended_animation = None
         if self.animation is not None:
             self.animation.stop()
             self.animation.deleteLater()
@@ -186,7 +188,23 @@ class ThemeHeader(QWidget):
         return QRectF(12, 40, max(0, self.width() * .75 - 24), max(0, self.height() - 45))
 
     def _update_animation(self, _frame_number):
+        self._blended_animation = None
         self.update(self._animation_rect().toAlignedRect())
+
+    def _animation_with_soft_right_edge(self, frame):
+        if self._blended_animation is None:
+            blended = QPixmap(frame.size())
+            blended.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(blended)
+            painter.drawPixmap(0, 0, frame)
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+            fade = QLinearGradient(frame.width() * .82, 0, frame.width(), 0)
+            fade.setColorAt(0, QColor(0, 0, 0, 255))
+            fade.setColorAt(1, QColor(0, 0, 0, 0))
+            painter.fillRect(blended.rect(), fade)
+            painter.end()
+            self._blended_animation = blended
+        return self._blended_animation
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -203,6 +221,8 @@ class ThemeHeader(QWidget):
                 scale = min(bounds.width() / frame.width(), bounds.height() / frame.height())
                 width, height = frame.width() * scale, frame.height() * scale
                 target = QRectF(bounds.left(), bounds.bottom() - height, width, height)
+                if pack.banner is not None:
+                    frame = self._animation_with_soft_right_edge(frame)
                 painter.drawPixmap(target, frame, QRectF(frame.rect()))
 
     def _paint_banner(self, painter, pack):
@@ -434,6 +454,18 @@ QTabBar { background: #101824; }
 QTabBar::tab { background: transparent; color: #93a4ba; padding: 11px 12px; border-bottom: 2px solid transparent; }
 QTabBar::tab:selected { color: #66ddda; border-bottom-color: #66ddda; }
 QTabBar::tab:hover { background: #172536; }
+QTabWidget#AnalysisTabs > QTabBar::tab { padding: 1px 12px; min-height: 22px; max-height: 22px; margin-right: 0; border-radius: 0; }
+QWidget#AnalysisBreathingFrame { background: #101824; border: 1px solid #34475b; border-radius: 0; }
+QWidget#MarkdownEditor { background: #101824; border: 1px solid #34475b; border-radius: 0; }
+QWidget#AnalysisViewBar { background: transparent; }
+QPushButton#AnalysisViewButton { border: 0; border-bottom: 1px solid #344b60; border-radius: 0; background: #172736; color: #a6b8ce; padding: 0 8px; min-height: 25px; max-height: 25px; }
+QPushButton#AnalysisViewButton[analysisSide="left"] { border-right: 1px solid #344b60; }
+QPushButton#AnalysisViewButton:checked { background: #17313c; border-color: #66ddda; color: #e0f4f2; font-weight: 600; }
+QPushButton#AnalysisViewButton:hover { border-color: #66ddda; }
+QTextBrowser#AnalysisOutput { background: transparent; border: 0; }
+QTextEdit#NoteMarkdownSource, QTextBrowser#NoteMarkdownPreview { background: transparent; border: 0; }
+QPushButton#AnalysisOutlineButton { background: transparent; border: 0; color: #a6b8ce; padding: 2px 8px; min-height: 22px; max-height: 22px; }
+QPushButton#AnalysisOutlineButton:hover { background: #1c2c3d; color: #e4ebf5; }
 QTextBrowser { background: #101824; border: none; padding: 12px; selection-background-color: #305663; selection-color: #ffffff; }
 QTextBrowser#PaperChat { padding-left: 6px; padding-right: 6px; }
 QTextEdit { background: #111c2a; border: 1px solid #2e4056; border-radius: 6px; padding: 10px; selection-background-color: #305663; }
@@ -493,6 +525,7 @@ QToolTip { background: #1b2d3d; color: #e4ebf5; border: 1px solid #405b70; paddi
 QListWidget#SettingsNavigation { background: #101824; border-right: 1px solid #263345; }
 QListWidget#SettingsNavigation::item { padding: 9px 12px; }
 QLabel#SettingsHeading { color: #eaf4ff; font-size: 18px; font-weight: 600; padding: 5px 0 10px; }
+QFrame#SettingsDivider { color: #344b62; background: #344b62; max-height: 1px; margin: 12px 0; }
 '''
 
 

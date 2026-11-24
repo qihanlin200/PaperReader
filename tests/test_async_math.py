@@ -12,6 +12,24 @@ from paperreader.ui.markdown import MarkdownBrowser
 
 
 class AsyncMathTests(unittest.TestCase):
+    def test_report_formula_code_spans_render_after_async_result(self):
+        app = QApplication.instance() or QApplication([])
+        browser = MarkdownBrowser(reading_style=True)
+        browser.async_math = True
+        image = QImage(20, 20, QImage.Format.Format_ARGB32)
+        image.fill(0)
+        try:
+            with patch('paperreader.ui.markdown.render_formula', return_value=image):
+                browser.set_markdown('目标函数：`h* = arg max_{h∈H_T} E_{x~X_T}[R_T(x)]`')
+                deadline = time.monotonic() + 2
+                while not browser.math_resources and time.monotonic() < deadline:
+                    app.processEvents()
+                    time.sleep(.005)
+            self.assertEqual(len(browser.math_resources), 1)
+            self.assertIn('h^{*}', next(iter(browser.math_sources.values())))
+        finally:
+            browser.close()
+
     def test_slow_formula_keeps_event_loop_responsive_and_current_text(self):
         app = QApplication.instance() or QApplication([])
         browser = MarkdownBrowser()
@@ -19,7 +37,7 @@ class AsyncMathTests(unittest.TestCase):
         entered, release = threading.Event(), threading.Event()
         image = QImage(20, 20, QImage.Format.Format_ARGB32)
         image.fill(0)
-        def slow_formula(source):
+        def slow_formula(source, font_px=13, max_width=None):
             entered.set()
             release.wait(3)
             return image

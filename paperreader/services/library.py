@@ -4,7 +4,9 @@ import sqlite3
 import uuid
 from pathlib import Path
 from platformdirs import user_data_dir
-from paperreader.services.titles import paper_title, is_placeholder
+from paperreader.services.titles import (
+    paper_title, is_placeholder, suspicious_title_spacing, title_spacing_repair,
+)
 from paperreader.services.sessions import ensure_sessions
 
 
@@ -174,25 +176,27 @@ class Library:
         row = self.db.execute("SELECT data FROM papers WHERE id=?", (identifier,)).fetchone()
         if row is None: raise ValueError("论文记录不存在。")
         paper = json.loads(row[0])
-        if is_placeholder(paper['title']):
-            try:
-                import fitz
-                with fitz.open(self.pdf_path(paper)) as doc:
-                    paper['title'] = paper_title(doc, paper['title'])
-                self.save(paper)
-            except (OSError, ValueError): pass
+        self._repair_title(paper)
         return paper
+
+    def _repair_title(self, paper):
+        stored = paper['title']
+        if not (is_placeholder(stored) or suspicious_title_spacing(stored)):
+            return
+        try:
+            import fitz
+            with fitz.open(self.pdf_path(paper)) as doc:
+                extracted = paper_title(doc, stored)
+            if is_placeholder(stored) or title_spacing_repair(stored, extracted):
+                paper['title'] = extracted
+                self.save(paper)
+        except (OSError, ValueError):
+            pass
 
     def all(self, include_removed=False):
         papers = [json.loads(row[0]) for row in self.db.execute("SELECT data FROM papers ORDER BY rowid DESC")]
         for paper in papers:
-            if is_placeholder(paper["title"]):
-                try:
-                    import fitz
-                    with fitz.open(self.pdf_path(paper)) as doc:
-                        paper["title"] = paper_title(doc, paper["title"])
-                    self.save(paper)
-                except (OSError, ValueError): pass
+            self._repair_title(paper)
         return papers if include_removed else [p for p in papers if not p.get("removed", False)]
 
     def save(self, paper):
@@ -211,8 +215,11 @@ class Library:
         identifier = hashlib.sha256(data).hexdigest()
         if self.db.execute("SELECT 1 FROM papers WHERE id=?", (identifier,)).fetchone():
             paper = self.get(identifier)
-            if paper.get('removed'):
-                paper['removed'] = False; self.save(paper)
+            if paper.get('removed') or (source and not paper.get('source')):
+                paper['removed'] = False
+                if source and not paper.get('source'):
+                    paper['source'] = source
+                self.save(paper)
             return paper
         target = self.root / "papers" / (identifier + ".pdf")
         temp = target.with_suffix(".tmp")

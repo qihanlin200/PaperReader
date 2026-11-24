@@ -17,6 +17,9 @@ QPushButton#Primary:disabled { background: #4c3b30; border-color: #5b493b; color
 QListWidget#PaperList::item:selected { background: #653c28; border-color: #916244; color: #fff0d8; }
 QTabBar::tab { background: #2e281e; border: 1px solid #4e4435; border-radius: 4px; }
 QTabBar::tab:selected { background: #91492f; border-color: #b9704a; color: #fff0d8; }
+QPushButton#AnalysisViewButton { background: #2e281e; border-color: #66553f; color: #c9bba7; }
+QPushButton#AnalysisViewButton:checked { background: #91492f; border-color: #b9704a; color: #fff0d8; }
+QPushButton#AnalysisViewButton:hover { border-color: #eca16e; }
 QWidget#SageCard { background: #29251b; border-bottom: 1px solid #51452f; }
 QLabel#SageTitle { color: #f2dfba; font-weight: 700; font-size: 21px; }
 QLabel#SageBadge { background: #4c492d; border: 1px solid #676044; border-radius: 8px; padding: 3px 8px; color: #f0e1bd; }

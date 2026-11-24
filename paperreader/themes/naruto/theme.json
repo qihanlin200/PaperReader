@@ -35,7 +35,7 @@
   "banner": "banner.png",
   "pdf_paper": "#30271b",
   "pdf_ink": "#f3dfba",
-  "header_animation": "header-duel.gif",
+  "header_animation": "header-valley-duel-warm.gif",
   "banner_animation": "header-waterfalls.gif",
   "banner_crop": [0.21, 0.76],
   "banner_background": "#211b14",

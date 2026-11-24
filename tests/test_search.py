@@ -1,18 +1,39 @@
 """Bright Data SERP request and result mapping."""
 import json
 import unittest
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from PySide6.QtCore import QUrl
 
 from paperreader.research_agent.operations import RunLimit
-from paperreader.research_agent.search import retrieve_web_evidence, search_web
+from paperreader.research_agent.search import read_public_source, retrieve_web_evidence, search_web
 from paperreader.research_agent.workflow import execute
 from paperreader.ui.research import ResearchWorkspace
 
 
 class SearchTests(unittest.TestCase):
+    def test_public_source_http_status_logs_status_and_safe_redirect(self):
+        import httpx
+
+        url = "https://example.org/article?token=secret"
+        response = httpx.Response(403, headers={"location": "https://example.org/login?key=private"},
+                                  request=httpx.Request("GET", url))
+        entry = dict(kind="web", url=url, title="Example", level="搜索摘要", text="Summary")
+        with patch("socket.getaddrinfo", return_value=[(None, None, None, None, ("93.184.215.14", 443))]), \
+             patch("paperreader.research_agent.search.httpx.stream", return_value=nullcontext(response)), \
+             patch("paperreader.research_agent.search.log") as log:
+            result = read_public_source(entry, "example", RunLimit())
+
+        self.assertIs(result, entry)
+        message = log.warning.call_args.args[0].format(*log.warning.call_args.args[1:])
+        self.assertIn("HTTP 403", message)
+        self.assertIn("example.org/article", message)
+        self.assertIn("example.org/login", message)
+        self.assertNotIn("secret", message)
+        self.assertNotIn("private", message)
+
     def test_brightdata_serp_results_become_web_evidence(self):
         response = Mock()
         response.json.return_value = {"status_code": 200, "body": json.dumps({"organic": [
@@ -139,7 +160,7 @@ class SearchTests(unittest.TestCase):
                                         search=search, read=lambda item, *_: item)
         self.assertEqual(len(results), 7)
 
-    def test_both_search_buttons_use_both_providers(self):
+    def test_both_search_buttons_use_web_and_crossref(self):
         run = {"workflow": {}, "evidence": [], "scanned": 0, "academic": True,
                "paper_search": True, "web_search": True, "question": "research agents",
                "history": "", "plan": "", "query": "research agents"}
@@ -148,7 +169,7 @@ class SearchTests(unittest.TestCase):
         paper = dict(id="paper", url="https://example.org/paper", kind="academic",
                      title="Paper", text="paper evidence", level="题录")
         web_search = Mock(return_value=[web])
-        openalex = Mock(return_value=[paper])
+        crossref = Mock(return_value=[paper])
 
         def model(config, key, messages, on_chunk=None, *, cancel=None):
             if "domain_skills（" in messages[0]["content"]:
@@ -156,13 +177,12 @@ class SearchTests(unittest.TestCase):
             return "两条来源均已查阅。"
 
         with patch("paperreader.research_agent.workflow.retrieve_web_evidence", web_search), \
-             patch("paperreader.research_agent.workflow.search_openalex", openalex), \
              patch("paperreader.research_agent.workflow.read_public_source", side_effect=lambda item, *_: item):
             status, _ = execute(run, [], {"model": "fake"}, "", "dark", RunLimit(),
-                                lambda *args: None, model=model, academic=lambda query: [])
+                                lambda *args: None, model=model, academic=crossref)
         self.assertEqual(status, "已完成")
         web_search.assert_called_once()
-        openalex.assert_called_once()
+        crossref.assert_called_once()
 
     def test_web_citation_has_detail_and_source_links_without_showing_url(self):
         workspace = SimpleNamespace(selected=lambda: {"runs": [{"evidence": [

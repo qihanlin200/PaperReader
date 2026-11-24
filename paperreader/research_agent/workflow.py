@@ -3,9 +3,10 @@ from copy import deepcopy
 from functools import partial
 from typing import Tuple, TypedDict
 
-from paperreader.services.analysis import AnalysisStopped, input_limit, message_length
+from paperreader.services.analysis import AnalysisStopped
 from paperreader.services.network import complete
 from paperreader.services.persona import with_persona
+from paperreader.logger import get_logger
 from .nodes.evaluate import evaluate_node
 from .nodes.intent import intent_node
 from .nodes.plan import plan_node
@@ -17,8 +18,11 @@ from .nodes.overview_map import overview_map_node
 from .nodes.full_map import full_map_node
 from .skills import SKILLS, WORKFLOW_SKILLS
 from .domain_registry import load_domain_skill
-from .search import SEARCH_ENGINES, read_public_source, retrieve_web_evidence, search_openalex, search_web
+from .search import SEARCH_ENGINES, read_public_source, retrieve_web_evidence, search_web
 from .operations import find_passages, search_academic, traced_model
+
+
+log = get_logger(__name__)
 from paperreader.services.lazy import httpx
 
 
@@ -48,8 +52,6 @@ def execute(run, sources, config, key, theme, limit, emit, *, model=complete, ac
         limit.check()
         messages = with_persona([{"role": "system", "content": system},
                                  {"role": "user", "content": text}], theme=theme)
-        if message_length(messages) > input_limit(config):
-            raise ValueError("研究上下文超过模型输入上限")
         result = traced_model(model, config, key, messages, stream, limit, emit)
         limit.check()
         return result
@@ -72,17 +74,13 @@ def execute(run, sources, config, key, theme, limit, emit, *, model=complete, ac
         if not run.get("paper_search"):
             return results
         try:
-            papers = search_openalex(query)
-        except (httpx.HTTPError, OSError, ValueError, RuntimeError):
-            papers = []
-        try:
-            fallback = academic(query)
+            papers = academic(query)
         except (httpx.HTTPError, OSError, ValueError, KeyError, TypeError):
-            if not papers and not results:
+            if not results:
                 raise
-            fallback = []
+            papers = []
         combined = {}
-        for paper in papers + fallback:
+        for paper in papers:
             combined.setdefault(paper["id"].casefold(), paper)
         return results + [read_public_source(item, query, limit) if i < 2 else item
                           for i, item in enumerate(list(combined.values())[:8])]
@@ -202,5 +200,6 @@ def execute(run, sources, config, key, theme, limit, emit, *, model=complete, ac
     except AnalysisStopped:
         return ("已停止" if limit.stop.is_set() else "达到时间上限"), ""
     except Exception as exc:
+        log.error("研究工作流失败：{}", type(exc).__name__, exc_info=True)
         emit("trace", f"研究步骤未完成 · {type(exc).__name__}")
         return "失败", ""
