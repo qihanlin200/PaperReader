@@ -743,7 +743,7 @@ class StreamingUITests(unittest.TestCase):
         ]
         menu.exec.side_effect = lambda position: rename.trigger()
         self.window.show(); self.app.processEvents()
-        with patch.object(QInputDialog, 'exec', edit), patch('paperreader.ui.window.QMenu', return_value=menu):
+        with patch.object(QInputDialog, 'exec', edit), patch('paperreader.ui.window_parts.papers.QMenu', return_value=menu):
             self.window.paper_context_menu(self.window.list.visualItemRect(item).center())
         self.assertEqual(item.text(), renamed)
         saved = self.library.get(self.paper['id'])
@@ -1263,7 +1263,7 @@ class StreamingUITests(unittest.TestCase):
         menu.exec.side_effect = lambda position: actions["导出学习内容"].trigger()
         row = next(i for i, paper in enumerate(self.window.papers) if paper["id"] == other["id"])
         position = self.window.list.visualItemRect(self.window.list.item(row)).center()
-        with patch('paperreader.ui.window.QMenu', return_value=menu), patch(
+        with patch('paperreader.ui.window_parts.papers.QMenu', return_value=menu), patch(
             'paperreader.ui.window.QFileDialog.getSaveFileName', return_value=(str(path), "")
         ):
             self.window.paper_context_menu(position)
@@ -1305,6 +1305,22 @@ class StreamingUITests(unittest.TestCase):
         await_color(get_theme('cat').pdf_paper)
         self.assertTrue(self.library.get(self.paper['id'])['pdf_follow_theme'])
         self.assertFalse(self.errors)
+
+    def test_analysis_report_keeps_vertical_scroll_without_horizontal_bar(self):
+        from PySide6.QtCore import Qt
+        browser = self.window.analysis_browsers['deep']
+        self.window.paper.setdefault('analyses', {})['deep'] = {
+            'report': '# 精读报告\n\n' + ('这一段用于检查窄栏中的连续文字换行与滚动。\n\n' * 80),
+            'complete': True,
+        }
+        self.window.analysis_mode.setCurrentIndex(1)
+        self.window.show()
+        self.window.refresh_analysis()
+        self.app.processEvents()
+        self.assertGreater(browser.verticalScrollBar().maximum(), 0)
+        self.assertEqual(browser.horizontalScrollBarPolicy(), Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.assertFalse(browser.horizontalScrollBar().isVisible())
+        self.assertLessEqual(browser.document().size().width(), browser.viewport().width())
 
     def test_read_button_matches_mode_selector_height_in_every_theme(self):
         self.assertEqual(self.window.read_button.objectName(), self.window.send_button.objectName())
@@ -1516,7 +1532,7 @@ class StreamingUITests(unittest.TestCase):
     def test_history_right_click_deletes_selected_session(self):
         from PySide6.QtCore import Qt
         from PySide6.QtTest import QTest
-        from paperreader.ui.window import SessionHistoryMenu
+        from paperreader.ui.window_parts.sessions_notes import SessionHistoryMenu
         paper = self.window.paper
         old_id = paper['active_session']
         self.window.new_session()
@@ -1693,7 +1709,7 @@ class StreamingUITests(unittest.TestCase):
         menu = MagicMock(); action = QAction('添加到笔记', self.window)
         menu.addAction.return_value = action
         menu.exec.side_effect = lambda position: action.trigger()
-        with patch('paperreader.ui.window.QMenu', return_value=menu):
+        with patch('paperreader.ui.window_parts.sessions_notes.QMenu', return_value=menu):
             self.window.question_context_menu(0, QPoint(10,10))
         notes = self.window.notes.toPlainText()
         self.assertIn('existing notes\n\n---\n\n', notes)
@@ -1772,7 +1788,7 @@ class StreamingUITests(unittest.TestCase):
         cancel, hide, purge = QPushButton(), QPushButton(), QPushButton()
         dialog.addButton.side_effect = [cancel, hide, purge]
         dialog.clickedButton.return_value = purge
-        with patch('paperreader.ui.window.QMessageBox', dialog_factory := MagicMock(return_value=dialog)):
+        with patch('paperreader.ui.window_parts.papers.QMessageBox', dialog_factory := MagicMock(return_value=dialog)):
             dialog_factory.ButtonRole = QMessageBox.ButtonRole
             self.window.remove_paper(paper)
         self.assertIsNone(self.window.paper)

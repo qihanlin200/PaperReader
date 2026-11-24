@@ -5,6 +5,7 @@ import fitz
 import httpx
 from paperreader.services.library import Library
 from paperreader.services.network import pdf_url, complete, client_options, api_error_message
+from paperreader.services.analysis import ModelContextLimitError
 
 
 class CoreTests(unittest.TestCase):
@@ -51,6 +52,32 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(complete({"endpoint": "https://example.org/v1", "model": "test",
                                        "max_input_chars": 50000}, "test",
                                       [{"role": "user", "content": prompt}]), "answer")
+
+    def test_context_rejection_is_distinguished_from_other_bad_requests(self):
+        original = httpx.Client
+        def client_for(message):
+            return original(transport=httpx.MockTransport(
+                lambda request: httpx.Response(400, json={'error': {'message': message}})),
+                trust_env=False)
+        config = {'endpoint': 'http://model.internal/v1', 'model': 'test'}
+        with patch('paperreader.services.network.httpx.Client', lambda **kw: client_for('maximum context length exceeded')):
+            with self.assertRaises(ModelContextLimitError):
+                complete(config, '', [{'role': 'user', 'content': 'paper'}], on_chunk=lambda _: None)
+        with patch('paperreader.services.network.httpx.Client', lambda **kw: client_for('invalid model name')):
+            with self.assertRaisesRegex(ValueError, '请求参数或模型名称'):
+                complete(config, '', [{'role': 'user', 'content': 'paper'}], on_chunk=lambda _: None)
+        from threading import Event
+        original_async = httpx.AsyncClient
+        requests = []
+        def reject(request):
+            requests.append(request)
+            return httpx.Response(400, json={'error': {'code': 'context_length_exceeded'}})
+        with patch('paperreader.services.network.httpx.AsyncClient',
+                   lambda **kw: original_async(transport=httpx.MockTransport(reject), **kw)):
+            with self.assertRaises(ModelContextLimitError):
+                complete(config, '', [{'role': 'user', 'content': 'paper'}],
+                         on_chunk=lambda _: None, cancel=Event(), on_usage=lambda _: None)
+        self.assertEqual(len(requests), 1)
 
     def test_http_intranet_api_and_invalid_address(self):
         original = httpx.Client

@@ -146,7 +146,16 @@ def _repair_bare_equations(text):
                     '·': r'\cdot ', '←': r'\leftarrow ', '𝟙': r'\mathbf{1}'}
     output = []
     fence = None
+    protected = list(TOKENS.finditer(text))
+    protected_index = 0
+    position = 0
     for line in text.splitlines(keepends=True):
+        end = position + len(line)
+        while protected_index < len(protected) and protected[protected_index].end() <= position:
+            protected_index += 1
+        has_protected_math = (protected_index < len(protected)
+                              and protected[protected_index].start() < end)
+        position = end
         stripped = line.lstrip()
         marker = re.match(r'(`{3,}|~{3,})', stripped)
         if marker:
@@ -156,7 +165,7 @@ def _repair_bare_equations(text):
                 fence = None
             output.append(line)
             continue
-        if fence or TOKENS.search(line) or stripped.startswith('|'):
+        if fence or has_protected_math or stripped.startswith('|'):
             output.append(line)
             continue
         prefix = re.match(r'^(\s*(?:[-*+]\s+|\d+[.)]\s+)?)', line).group()

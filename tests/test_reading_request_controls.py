@@ -1,8 +1,10 @@
 """Reading call details persist, and a chat answer can be stopped."""
 import os
+import json
 import tempfile
 import time
 import unittest
+from threading import Event
 from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
@@ -92,6 +94,53 @@ class ReadingRequestControlsTests(unittest.TestCase):
                     self.assertIn('部分回答', saved['content'])
                     self.assertIn('已停止', saved['request_status']['title'])
                 finally:
+                    window.close()
+                    library.db.close()
+
+    def test_deep_reading_progress_advances_and_retains_completion(self):
+        with tempfile.TemporaryDirectory() as root, \
+                patch('paperreader.ui.window.keyring.get_password', return_value='test'):
+            phase_release = Event()
+            release = Event()
+            def analysis(pages, config, key, mode, complete, emit, **kwargs):
+                emit(json.dumps({'kind': 'plan', 'plan': 'v5', 'total': 1, 'completed': 0}))
+                emit(json.dumps({'kind': 'section', 'title': '全文精读 · 完整原文', 'prefix': ''}))
+                emit(json.dumps({'kind': 'text', 'text': '# 分段报告\n' + '证据' * 100}))
+                phase_release.wait(2)
+                emit(json.dumps({'kind': 'text', 'text': '\n# 精读报告\n' + '分析' * 200}))
+                release.wait(2)
+                return {'scope': '全文', 'text': '报告', 'report': '报告',
+                        'segments_text': '分段', 'segments': 1}
+            with patch('paperreader.ui.window.run_analysis', side_effect=analysis):
+                window, library, _ = self.make_window(root)
+                try:
+                    window.show()
+                    window.analysis_mode.setCurrentIndex(1)
+                    window.analyze()
+                    self.wait_for(lambda: 0 < window.analysis_progress_bar.value() < 50)
+                    self.assertTrue(window.analysis_progress_widget.isVisible())
+                    self.assertIn('约', window.analysis_progress_label.text())
+                    self.assertLess(window.analysis_progress_widget.geometry().left(), 20)
+                    phase_release.set()
+                    self.wait_for(lambda: 50 < window.analysis_progress_bar.value() < 95)
+                    release.set()
+                    self.wait_for(lambda: not window.busy)
+                    self.assertEqual(window.analysis_progress_bar.value(), 100)
+                    self.assertTrue(window.analysis_progress_widget.isVisible())
+                    self.assertIn('已完成', window.analysis_progress_state.text())
+                    other = fitz.open()
+                    other.new_page().insert_text((72, 72), 'A different paper.')
+                    second = library.import_pdf(other.tobytes(), 'Other paper')
+                    other.close()
+                    window.reload(second['id'])
+                    self.assertTrue(window.analysis_progress_widget.isHidden())
+                finally:
+                    phase_release.set()
+                    release.set()
+                    deadline = time.monotonic() + 3
+                    while window.busy and time.monotonic() < deadline:
+                        self.app.processEvents()
+                        time.sleep(.005)
                     window.close()
                     library.db.close()
 

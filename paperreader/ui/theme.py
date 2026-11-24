@@ -512,6 +512,10 @@ QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
 QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 QStatusBar { background: #101824; color: #93a4ba; border-top: 1px solid #263345; font-size: 11px; }
 QStatusBar::item { border: none; }
+QLabel#AnalysisProgressLabel { color: #d0dbea; font-size: 11px; }
+QLabel#AnalysisProgressState { color: #93a4ba; font-size: 11px; }
+QProgressBar#AnalysisProgress { background: #263345; border: 1px solid #344b62; border-radius: 5px; }
+QProgressBar#AnalysisProgress::chunk { background: #66ddda; border-radius: 4px; }
 QMenu { background: #162231; border: 1px solid #344b62; padding: 5px; }
 QMenu::item { padding: 8px 20px; border-radius: 4px; }
 QMenu::item:selected { background: #294251; color: #8ce9e6; }

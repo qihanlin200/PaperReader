@@ -1,5 +1,6 @@
 import os
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+import re
 import unittest
 from PySide6.QtWidgets import QApplication
 from paperreader.ui.math_render import markdown_html
@@ -61,6 +62,41 @@ class MathTests(unittest.TestCase):
                        r'n\in\mathbb N', r'A_{\le i}',
                        r'R_s=\frac{R_s^{(1)}+R_s^{(2)}}2'):
             self.assertFalse(render_formula(source).isNull(), source)
+
+    def test_multiline_formula_inside_list_is_preserved_and_rendered(self):
+        source = (
+            '- 经济指标：对方法 \\(m\\)、种子 \\(s\\) 的均值为\n'
+            '  \\[\n'
+            '  \\hat M_{m,s}(r)=\\frac{1}{N_{m,s}}\\sum_{i=1}^{N_{m,s}}\\tilde M_i(r),\\qquad\n'
+            '  \\tilde M_i(r)=\\begin{cases}\n'
+            '  M_i(r), & \\text{到达第 }r\\text{ 轮},\\\\\n'
+            '  0, & \\text{否则}.\n'
+            '  \\end{cases}\n'
+            '  \\]\n'
+            '  原文依据：第15页。'
+        )
+        resources = {}
+        html = markdown_html(source, resources, {}, width=480)
+        visible_html = re.sub(r'<img\b[^>]*>', '', html)
+        self.assertNotIn(r'\begin{cases}', visible_html)
+        self.assertNotIn(r'\hat M', visible_html)
+        self.assertEqual(html.count('<img'), 3)
+        view = MarkdownBrowser(reading_style=True)
+        try:
+            view.set_markdown(source)
+            block = view.document().begin()
+            inline_block = None
+            while block.isValid():
+                if '经济指标' in block.text():
+                    inline_block = block
+                    break
+                block = block.next()
+            self.assertIsNotNone(inline_block)
+            self.assertIn('\ufffc', inline_block.text())
+            self.assertEqual(inline_block.blockFormat().lineHeight(), 150)
+            self.assertEqual(inline_block.blockFormat().bottomMargin(), 6)
+        finally:
+            view.close()
 
     def test_code_currency_and_incomplete_input_stay_text(self):
         resources, sources = {}, {}
@@ -128,6 +164,22 @@ class MathTests(unittest.TestCase):
         self.assertIn('A | one', invalid)
         unsafe = markdown_html('```paperreader-flow\nA | <script>\nB | b\nC | c\n```', {}, {})
         self.assertIn('&lt;script&gt;', unsafe)
+
+    def test_analysis_heading_paragraph_and_list_share_line_spacing(self):
+        view = MarkdownBrowser(reading_style=True)
+        try:
+            view.set_markdown('## 章节\n\n普通段落第一行。\n普通段落第二行。\n\n- 列表第一项\n- 列表第二项')
+            blocks = []
+            block = view.document().begin()
+            while block.isValid():
+                if block.text().strip():
+                    blocks.append(block)
+                block = block.next()
+            self.assertGreaterEqual(len(blocks), 3)
+            self.assertEqual({block.blockFormat().lineHeight() for block in blocks}, {150})
+            self.assertEqual({block.blockFormat().bottomMargin() for block in blocks}, {6})
+        finally:
+            view.close()
 
     def test_resources_are_local_only(self):
         view = MarkdownBrowser()

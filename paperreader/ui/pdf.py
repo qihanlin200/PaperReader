@@ -2,8 +2,8 @@ from paperreader.services.lazy import fitz
 from paperreader.services.pdf_raster import rasterize_page_data, rasterize_pdf_file
 from paperreader.ui.selection import column_words, paragraph_words
 from paperreader.services.themes import get_theme
-from paperreader.ui.theme import current_theme
-from PySide6.QtCore import Qt, QRect, QRectF, QPoint, Signal, QEvent, QElapsedTimer, QObject
+from paperreader.ui.theme import current_theme, theme_color
+from PySide6.QtCore import Qt, QRect, QRectF, QPoint, Signal, QEvent, QElapsedTimer, QEventLoop, QObject
 from PySide6.QtGui import QPixmap, QImage, QPainter, QColor
 from PySide6.QtWidgets import QApplication, QLabel, QMenu
 from concurrent.futures import ProcessPoolExecutor
@@ -259,7 +259,7 @@ class PageView(QLabel):
 from bisect import bisect_right
 from math import ceil
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QScrollArea, QWidget, QVBoxLayout, QHBoxLayout
+from PySide6.QtWidgets import QScrollArea, QWidget, QVBoxLayout, QHBoxLayout, QProgressBar
 
 
 class ContinuousPDF(QScrollArea):
@@ -304,8 +304,54 @@ class ContinuousPDF(QScrollArea):
         self.settle_timer.setSingleShot(True); self.settle_timer.setInterval(180)
         self.settle_timer.timeout.connect(self.finish_zoom_preview)
         self.resizing_pages = False
+        self.loading_active = False
+        self._building_document = False
+        self.loading_panel = QWidget(self.viewport())
+        self.loading_panel.setObjectName('PdfLoadingPanel')
+        self.loading_panel.setFixedWidth(280)
+        self.loading_panel.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        loading_layout = QVBoxLayout(self.loading_panel)
+        loading_layout.setContentsMargins(14, 11, 14, 11)
+        loading_layout.setSpacing(6)
+        self.loading_label = QLabel('正在打开论文…')
+        self.loading_progress = QProgressBar()
+        self.loading_progress.setFixedHeight(8)
+        self.loading_progress.setTextVisible(False)
+        loading_layout.addWidget(self.loading_label)
+        loading_layout.addWidget(self.loading_progress)
+        self.loading_panel.hide()
+
+    def position_loading_panel(self):
+        self.loading_panel.move(max(0, (self.viewport().width() - self.loading_panel.width()) // 2), 16)
+
+    def begin_loading(self):
+        self.loading_active = True
+        self.loading_label.setText('正在打开论文…')
+        self.loading_progress.setRange(0, 0)
+        self.loading_panel.setStyleSheet(
+            'QWidget#PdfLoadingPanel {'
+            f'background: {theme_color("#101824")}; border: 1px solid {theme_color("#355665")};'
+            'border-radius: 9px; }'
+            f'QLabel {{ color: {theme_color("#e4ebf5")}; border: none; }}'
+            f'QProgressBar {{ background: {theme_color("#213243")}; border: none; border-radius: 4px; }}'
+            f'QProgressBar::chunk {{ background: {theme_color("#66ddda")}; border-radius: 4px; }}'
+        )
+        self.position_loading_panel()
+        self.loading_panel.show()
+        self.loading_panel.raise_()
+        QApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+
+    def end_loading(self):
+        self.loading_active = False
+        self._building_document = False
+        self.loading_panel.hide()
+
+    def finish_loading_if_idle(self):
+        if self.loading_active and not self._building_document and not self.queue and self.render_job is None:
+            self.end_loading()
 
     def clear_document(self):
+        self.end_loading()
         self.render_timer.stop(); self.settle_timer.stop()
         self.render_generation += 1
         self.queue = []; self.gesture_active = False; self.pinch_source = None
@@ -314,6 +360,9 @@ class ContinuousPDF(QScrollArea):
         self.setWidget(QWidget())
 
     def load(self, doc, page=0):
+        if not self.loading_active:
+            self.begin_loading()
+        self._building_document = True
         if doc is not self.doc:
             self.settle_timer.stop(); self.gesture_active = False; self.pinch_source = None
         self.render_timer.stop(); self.queue = []
@@ -323,7 +372,10 @@ class ContinuousPDF(QScrollArea):
         container = QWidget(); container.installEventFilter(self); layout = QVBoxLayout(container)
         layout.setContentsMargins(12, 12, 12, 12); layout.setSpacing(16)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        for index in range(len(doc)):
+        total = len(doc)
+        self.loading_label.setText(f'正在准备页面 · 0/{total}')
+        self.loading_progress.setRange(0, max(1, total))
+        for index in range(total):
             view = PageView(); view.scale = self.scale
             view.installEventFilter(self)
             size = doc[index].rect
@@ -333,10 +385,18 @@ class ContinuousPDF(QScrollArea):
             view.setText(f'第 {index+1} 页 · 加载中…')
             view.action.connect(lambda action, text, rects, i=index: self.action.emit(i, action, text, rects))
             self.pages.append(view)
+            if (index + 1) % 12 == 0 or index + 1 == total:
+                self.loading_label.setText(f'正在准备页面 · {index + 1}/{total}')
+                self.loading_progress.setValue(index + 1)
+                QApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
         self.setWidget(container)
         self.layout_pages()
+        self._building_document = False
         self.jump(page)
         self.scrolled()
+        self.loading_label.setText('正在渲染可见页面…')
+        self.loading_progress.setRange(0, 0)
+        self.finish_loading_if_idle()
 
     def layout_pages(self):
         container = self.widget()
@@ -407,7 +467,7 @@ class ContinuousPDF(QScrollArea):
         self.scrolled()
 
     def scrolled(self):
-        if not self.pages or self.resizing_pages: return
+        if not self.pages or self.resizing_pages or self._building_document: return
         top = self.verticalScrollBar().value()
         index = max(0, min(len(self.pages)-1, bisect_right(self.offsets, top+40)-1))
         index -= index % self.columns
@@ -447,6 +507,7 @@ class ContinuousPDF(QScrollArea):
         view.display(self.doc[index], [m for m in self.marks if m['page'] == index], self.pdf_colors())
         view.anchor, view.endpoint, view.click_selection = anchor, endpoint, click_selection
         if self.queue: self.render_timer.start(0)
+        else: self.finish_loading_if_idle()
 
     def apply_render_result(self, result):
         generation, index, scale, future = result
@@ -466,6 +527,7 @@ class ContinuousPDF(QScrollArea):
                                    image, density)
                 view.anchor, view.endpoint, view.click_selection = anchor, endpoint, click_selection
         if self.queue and not self.settle_timer.isActive(): self.render_timer.start(0)
+        else: self.finish_loading_if_idle()
 
     def page_is_visible(self, index):
         top = self.verticalScrollBar().value()
@@ -600,4 +662,5 @@ class ContinuousPDF(QScrollArea):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        if hasattr(self, 'loading_panel'): self.position_loading_panel()
         self.scrolled()

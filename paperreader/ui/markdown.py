@@ -357,15 +357,14 @@ class MarkdownBrowser(QTextBrowser):
                 figure_indent = None
             if not level and not block.textList() and block.text().strip().rstrip("：:") in _ANALYSIS_SECTION_LABELS:
                 level = 3
-            has_image = '\ufffc' in block.text()
-            fmt.setLineHeight(100 if has_image else (140 if level else 150),
+            standalone_image = block.text().strip() == '\ufffc'
+            fmt.setLineHeight(100 if standalone_image else 150,
                               QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
-            fmt.setTopMargin(14 if level and block.blockNumber() else 0)
-            fmt.setBottomMargin(0 if has_image else (6 if level else (4 if block.textList() else 9)))
+            fmt.setTopMargin(12 if level and block.blockNumber() else 0)
+            fmt.setBottomMargin(0 if standalone_image else 6)
             if level and heading_background:
                 fmt.setBackground(QColor(heading_background))
                 fmt.setLeftMargin(8)
-                fmt.setLineHeight(175, QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
             cursor.setBlockFormat(fmt)
             size = {1: 18, 2: 16, 3: 14, 4: 13, 5: 13, 6: 13}.get(level, 13)
             chars = QTextCharFormat()

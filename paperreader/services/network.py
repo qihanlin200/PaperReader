@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 from uuid import uuid4
 from paperreader.services.lazy import httpx
 from paperreader.logger import get_logger, preview
-from .analysis import AnalysisStopped
+from .analysis import AnalysisStopped, ModelContextLimitError
 
 
 log = get_logger(__name__)
@@ -65,6 +65,23 @@ def api_error_message(status):
     return f"API 请求失败（HTTP {status}）：" + reasons.get(status, "请检查服务商状态、配置及网络。")
 
 
+def api_response_error(response):
+    if response.status_code in (400, 413, 422):
+        try:
+            detail = response.json().get('error', {})
+        except (ValueError, AttributeError):
+            detail = response.text[:2048]
+        if isinstance(detail, dict):
+            detail = ' '.join(str(detail.get(key, '')) for key in ('code', 'type', 'message'))
+        detail = str(detail).lower()
+        if any(marker in detail for marker in (
+                'context_length', 'context window', 'context length', 'too many tokens',
+                'token limit', 'prompt too long', 'input too long', 'maximum context',
+                'max context', '上下文长度', '上下文窗口')):
+            return ModelContextLimitError('论文正文超出模型上下文容量，正在改用分段阅读。')
+    return ValueError(api_error_message(response.status_code))
+
+
 def client_options(url):
     # HTTP is used for user-configured local/LAN endpoints. Environment proxy
     # variables can route these requests through a gateway that returns 504.
@@ -80,12 +97,17 @@ async def cancellable_stream(url, headers, payload, consume, cancel, request_id=
                     log.info("模型请求 {} HTTP 响应：{}，类型 {}", request_id, response.status_code,
                              response.headers.get("content-type", ""))
                     if response.status_code in (400, 422) and "stream_options" in request_payload:
+                        await response.aread()
+                        error = api_response_error(response)
+                        if isinstance(error, ModelContextLimitError):
+                            raise error
                         log.warning("模型请求 {} 不支持 stream_options，重试兼容格式", request_id)
                         request_payload = {key: value for key, value in request_payload.items()
                                            if key != "stream_options"}
                         continue
                     if response.is_error:
-                        raise ValueError(api_error_message(response.status_code))
+                        await response.aread()
+                        raise api_response_error(response)
                     async for line in response.aiter_lines():
                         if consume(line):
                             break
@@ -174,7 +196,8 @@ def complete(config, key, messages, on_chunk=None, *, cancel=None, on_usage=None
                          response.headers.get("content-type", ""))
                 if response.is_error:
                     log.warning("模型请求 {} 返回 HTTP {}", request_id, response.status_code)
-                    raise ValueError(api_error_message(response.status_code))
+                    response.read()
+                    raise api_response_error(response)
                 for line in response.iter_lines():
                     if consume(line):
                         break
@@ -188,7 +211,7 @@ def complete(config, key, messages, on_chunk=None, *, cancel=None, on_usage=None
                      response.headers.get("content-type", ""))
             if response.is_error:
                 log.warning("模型请求 {} 返回 HTTP {}", request_id, response.status_code)
-                raise ValueError(api_error_message(response.status_code))
+                raise api_response_error(response)
             result = response.json()
             if on_usage is not None and isinstance(result.get("usage"), dict):
                 log.info("模型请求 {} 用量：{}", request_id, result["usage"])
