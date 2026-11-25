@@ -1244,7 +1244,7 @@ class StreamingUITests(unittest.TestCase):
     def test_settings_rail_opens_current_sections(self):
         from PySide6.QtCore import Qt
         from PySide6.QtTest import QTest
-        from PySide6.QtWidgets import QListWidget
+        from PySide6.QtWidgets import QFrame, QListWidget, QStackedWidget
 
         self.window.show()
         QTest.mouseClick(self.window.settings_rail_button, Qt.MouseButton.LeftButton)
@@ -1256,11 +1256,78 @@ class StreamingUITests(unittest.TestCase):
             navigation = dialog.findChild(QListWidget, "SettingsNavigation")
             self.assertEqual([navigation.item(i).text() for i in range(navigation.count())],
                              ["常规设置", "模型设置", "搜索 API"])
+            cards = dialog.findChild(QStackedWidget).widget(0).findChildren(QFrame, "SettingsCard")
+            self.assertEqual(len(cards), 2)
+            self.assertTrue(all(card.width() <= 690 for card in cards))
             self.window.activateWindow()
             self.app.processEvents()
             self.assertTrue(dialog.isVisible())
             QTest.mouseClick(self.window.settings_rail_button, Qt.MouseButton.LeftButton)
             self.assertIs(self.window._settings_dialog, dialog)
+        finally:
+            dialog.reject()
+
+    def test_typography_settings_update_interface_without_reloading_pdf(self):
+        from PySide6.QtWidgets import QComboBox
+        from paperreader.ui.theme import document_stylesheet
+        from paperreader.ui.typography import FONT_OPTIONS, SIZE_OPTIONS
+
+        original_doc = self.window.doc
+        dialog = self.window.settings()
+        def flush_typography():
+            for _ in range(5):
+                self.app.processEvents()
+        try:
+            font_picker = dialog.findChild(QComboBox, "FontPicker")
+            size_picker = dialog.findChild(QComboBox, "FontSizePicker")
+            self.assertEqual([font_picker.itemData(i) for i in range(font_picker.count())],
+                             [item[0] for item in FONT_OPTIONS])
+            self.assertEqual([size_picker.itemData(i) for i in range(size_picker.count())],
+                             [item[0] for item in SIZE_OPTIONS])
+            for picker in (font_picker, size_picker):
+                picker.view().ensurePolished()
+                self.assertTrue(all(picker.view().sizeHintForRow(i) >=
+                                    picker.fontMetrics().height() + 12
+                                    for i in range(picker.count())))
+            font_picker.setCurrentIndex(font_picker.findData("source-han-sans"))
+            flush_typography()
+            self.assertEqual(self.library.config()["font_family"], "source-han-sans")
+            self.assertIn("Source Han Sans SC", self.app.font().family())
+            size_picker.setCurrentIndex(size_picker.findData("extra-large"))
+            flush_typography()
+            self.assertEqual(self.library.config()["font_size"], "extra-large")
+            self.assertIn("font-size: 21px", document_stylesheet())
+            self.assertEqual(self.window.read_button.height(), 54)
+            self.assertIs(self.window.doc, original_doc)
+            font_picker.setCurrentIndex(font_picker.findData("system"))
+            flush_typography()
+            self.assertIsNone(self.app.property("paperreaderFontFamily"))
+            size_picker.setCurrentIndex(size_picker.findData("standard"))
+            flush_typography()
+            self.assertEqual(self.window.read_button.height(), 36)
+        finally:
+            dialog.reject()
+
+    def test_search_api_card_keeps_credentials_and_engine_settings(self):
+        from PySide6.QtWidgets import QComboBox, QFrame, QLineEdit, QListWidget, QPushButton, QStackedWidget
+
+        dialog = self.window.settings()
+        try:
+            dialog.findChild(QListWidget, "SettingsNavigation").setCurrentRow(2)
+            page = dialog.findChild(QStackedWidget).widget(2)
+            self.assertEqual(len(page.findChildren(QFrame, "SettingsCard")), 1)
+            key = page.findChild(QLineEdit, "SearchKey")
+            zone = page.findChild(QLineEdit, "SearchZone")
+            key.setText("new-key")
+            zone.setText("new-zone")
+            saves = page.findChildren(QPushButton, "SettingsInlineSave")
+            with patch('paperreader.ui.settings.keyring.set_password') as save_secret:
+                for button in saves:
+                    button.click()
+            self.assertEqual(save_secret.call_count, 2)
+            engine = page.findChild(QComboBox, "BrightDataEnginePicker")
+            engine.setCurrentIndex(engine.findData("google"))
+            self.assertEqual(self.library.config()["brightdata_engine"], "google")
         finally:
             dialog.reject()
 

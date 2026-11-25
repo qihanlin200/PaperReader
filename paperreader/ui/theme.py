@@ -5,6 +5,7 @@ from PySide6.QtCore import QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QLinearGradient, QMovie, QPainter, QPalette, QPixmap
 from PySide6.QtWidgets import QApplication, QCheckBox, QWidget
 from paperreader.services.themes import DEFAULT_THEME_ID, get_theme
+from paperreader.ui.typography import apply_font, current_family, scale_stylesheet
 
 BACKGROUND = '#0b1019'
 PANEL = '#101824'
@@ -273,7 +274,9 @@ hr { color: #29394c; }
 
 
 def document_stylesheet():
-    return theme_css(DOCUMENT_CSS) + '\n' + get_theme(current_theme()).document_css
+    family = current_family()
+    font_css = 'body { font-family: "' + family.replace('"', '') + '"; }\n' if family else ''
+    return font_css + scale_stylesheet(theme_css(DOCUMENT_CSS) + '\n' + get_theme(current_theme()).document_css)
 
 
 STYLESHEET = '''
@@ -492,6 +495,10 @@ QComboBox#ThemePicker::drop-down { background: transparent; border: none; }
 QComboBox#ThemePicker QAbstractItemView { border: 1px solid #344b62; outline: none; }
 QComboBox#ThemePicker QAbstractItemView::item { padding: 7px 10px; min-height: 19px; }
 QComboBox#ThemePicker QAbstractItemView::item:selected { color: #8ce9e6; }
+QComboBox#FontPicker, QComboBox#FontSizePicker { combobox-popup: 0; min-height: 24px; }
+QComboBox#FontPicker QAbstractItemView::item, QComboBox#FontSizePicker QAbstractItemView::item { min-height: 24px; padding: 8px 12px; }
+QFrame#TypographyOverlay { background: rgba(9, 16, 25, 210); }
+QLabel#TypographyOverlayMessage { color: #e4ebf5; font-size: 18px; font-weight: 600; }
 QLineEdit, QSpinBox { background: #0c1521; border: 1px solid #34475b; border-radius: 6px; padding: 9px 11px; min-height: 22px; selection-background-color: #305663; }
 QWidget#QuoteCard { background: #142530; border: 1px solid #35515c; border-radius: 7px; }
 QSpinBox QLineEdit { background: transparent; border: none; padding: 0; min-height: 0; }
@@ -526,14 +533,28 @@ QMenu#PdfSelectionMenu { border-radius: 8px; }
 QMenu#PdfSelectionMenu::item { padding: 8px 24px 8px 14px; }
 QMenu#PdfSelectionMenu::separator { height: 1px; background: #344b62; margin: 4px 8px; }
 QToolTip { background: #1b2d3d; color: #e4ebf5; border: 1px solid #405b70; padding: 7px; }
-QListWidget#SettingsNavigation { background: #101824; border-right: 1px solid #263345; }
-QListWidget#SettingsNavigation::item { padding: 9px 12px; }
+QListWidget#SettingsNavigation { background: #101824; border: none; border-right: 1px solid #263345; padding: 22px 9px; outline: none; }
+QListWidget#SettingsNavigation::item { color: #a6b8ce; padding: 11px 13px; margin: 3px 0; border-radius: 7px; }
+QListWidget#SettingsNavigation::item:hover { background: #1b2d3d; color: #e4ebf5; }
+QListWidget#SettingsNavigation::item:selected { background: #1d3b49; color: #8ce9e6; font-weight: 600; }
+QWidget#SettingsScrollContent, QWidget#SettingsCards { background: transparent; }
+QScrollArea#SettingsScroll { background: transparent; border: none; }
+QLabel#SettingsPageTitle { color: #eef5ff; font-size: 22px; font-weight: 700; }
+QLabel#SettingsPageSubtitle { color: #93a4ba; font-size: 12px; }
+QFrame#SettingsCard { background: #101824; border: 1px solid #2b4053; border-radius: 11px; }
+QLabel#SettingsCardTitle { color: #eef5ff; font-size: 16px; font-weight: 650; }
+QLabel#SettingsCardDescription { color: #a6b8ce; font-size: 12px; }
+QLabel#SettingsFieldLabel { color: #e4ebf5; font-size: 13px; font-weight: 600; }
+QLabel#SettingsFieldDetail { color: #8294ab; font-size: 11px; }
+QPushButton#SettingsSaveButton { background: #66ddda; color: #092426; border-color: #66ddda; font-weight: 600; }
+QPushButton#SettingsSaveButton:hover { background: #8ce9e6; }
+QPushButton#SettingsCloseButton { min-width: 78px; }
 QLabel#SettingsHeading { color: #eaf4ff; font-size: 18px; font-weight: 600; padding: 5px 0 10px; }
 QFrame#SettingsDivider { color: #344b62; background: #344b62; max-height: 1px; margin: 12px 0; }
 '''
 
 
-def apply_theme(theme=DEFAULT_THEME_ID):
+def apply_theme(theme=DEFAULT_THEME_ID, font_key="system", size_key="standard"):
     app = QApplication.instance()
     if app is None: return
     pack = get_theme(theme)
@@ -559,12 +580,18 @@ def apply_theme(theme=DEFAULT_THEME_ID):
         QPalette.ColorRole.Link: ACCENT,
     }.items(): palette.setColor(role, QColor(theme_color(value, theme)))
     app.setPalette(palette)
-    font = QFont(app.font()); font.setPointSize(11); app.setFont(font)
+    apply_font(font_key, size_key)
     arrow = (Path(__file__).resolve().parent.parent / "assets" / "dropdown-arrow.svg").as_posix()
     analysis_arrow = Path(arrow).with_name("analysis-arrow.svg").as_posix()
     if pack.arrow:
         arrow = analysis_arrow = pack.arrow.as_posix()
     stylesheet = theme_css(STYLESHEET, theme) + '\n' + pack.stylesheet
+    family = current_family()
+    if family:
+        safe_family = family.replace('"', '')
+        stylesheet += ('\nQWidget, QLabel#BrandLabel, QFrame#ScrollTextCard QLabel'
+                       ' { font-family: "' + safe_family + '"; }')
+    stylesheet = scale_stylesheet(stylesheet)
     app.setStyleSheet(stylesheet.replace("__DROPDOWN_ARROW__", arrow)
                       .replace("__ANALYSIS_ARROW__", analysis_arrow))
     from paperreader.ui.scrollbars import install_hover_scrollbars

@@ -80,17 +80,19 @@ def draw_mindmap(mindmap, width, scale=2):
     painter.setBrush(fill)
     painter.drawRoundedRect(root, 13, 13)
     painter.setPen(foreground)
-    painter.setFont(QFont("", 10, QFont.Weight.Bold))
+    from paperreader.ui.typography import current_family, scale_factor
+    family = current_family() or ""
+    painter.setFont(QFont(family, round(10 * scale_factor()), QFont.Weight.Bold))
     painter.drawText(root.adjusted(5, 3, -5, -3), flags, mindmap["title"])
     for box, branch in nodes:
         painter.setPen(QPen(muted, 1))
         painter.setBrush(fill)
         painter.drawRoundedRect(box, 10, 10)
         painter.setPen(foreground)
-        painter.setFont(QFont("", 9, QFont.Weight.Bold))
+        painter.setFont(QFont(family, round(9 * scale_factor()), QFont.Weight.Bold))
         painter.drawText(QRectF(box.x() + 4, box.y() + 3, box.width() - 8, 29), flags, branch["label"])
         painter.setPen(muted)
-        painter.setFont(QFont("", 9))
+        painter.setFont(QFont(family, round(9 * scale_factor())))
         painter.drawText(box.adjusted(5, 32, -5, -5), flags, "\n".join(branch["points"]))
     painter.end()
     return image

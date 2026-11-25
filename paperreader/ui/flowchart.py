@@ -64,9 +64,13 @@ def render_flow(source, width, plain_text):
     display_width = max(180, min(int(width), 760))
     left, right = 38.0, display_width - 38.0
     card_width = right - left
-    title_font = QFont(); title_font.setPixelSize(15); title_font.setBold(True)
-    body_font = QFont(); body_font.setPixelSize(13)
-    badge_font = QFont(); badge_font.setPixelSize(11); badge_font.setBold(True)
+    from paperreader.ui.typography import current_family, pixels
+    title_font = QFont(); title_font.setPixelSize(pixels(15)); title_font.setBold(True)
+    body_font = QFont(); body_font.setPixelSize(pixels(13))
+    badge_font = QFont(); badge_font.setPixelSize(pixels(11)); badge_font.setBold(True)
+    if current_family():
+        for font in (title_font, body_font, badge_font):
+            font.setFamily(current_family())
     title_metrics, body_metrics = QFontMetrics(title_font), QFontMetrics(body_font)
     text_width = max(55, int(card_width - 80))
     positions = {}

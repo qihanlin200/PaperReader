@@ -35,6 +35,7 @@ from paperreader.ui.window_parts.themes import ThemesMixin
 from paperreader.ui.work_rail import WorkRailButton, menu_symbol_icon
 from paperreader.services.themes import THEMES, get_theme
 from paperreader.ui.theme import ThemeHeader, WorkspaceBackground, apply_theme
+from paperreader.ui.typography import resize_fixed_text_controls, valid_font, valid_size
 from paperreader.ui.settings import SettingsDialog, open_settings, build_model_settings
 from paperreader.ui.composer import QuestionEdit
 from paperreader.ui.questions import QuestionNavigation
@@ -90,7 +91,10 @@ class Window(PapersMixin, PdfReadingMixin, FollowupMixin, SessionsNotesMixin, Th
         from paperreader.research_agent.search import SEARCH_ENGINES
         engine = saved_config.get("brightdata_engine", "bing")
         self.profile_config["brightdata_engine"] = engine if engine in SEARCH_ENGINES else "bing"
-        apply_theme(self.profile_config["theme"])
+        self.profile_config["font_family"] = valid_font(saved_config.get("font_family"))
+        self.profile_config["font_size"] = valid_size(saved_config.get("font_size"))
+        apply_theme(self.profile_config["theme"], self.profile_config["font_family"],
+                    self.profile_config["font_size"])
         self.setWindowIcon(QApplication.instance().windowIcon())
         self.config = active_profile(self.profile_config)
         self.paper = None; self.doc = None; self.page = 0; self.quote = ""; self.busy = False
@@ -513,6 +517,7 @@ class Window(PapersMixin, PdfReadingMixin, FollowupMixin, SessionsNotesMixin, Th
         for browser in self.findChildren(MarkdownBrowser): browser.async_math = True
         self.chat.external_math = True
         self.chat.mathUpdated.connect(self.render_chat)
+        resize_fixed_text_controls(self)
         self.reload()
         self.statusBar().showMessage("学习记录仅保存在本机；AI 操作会将必要文本发送到配置的模型 API。")
 

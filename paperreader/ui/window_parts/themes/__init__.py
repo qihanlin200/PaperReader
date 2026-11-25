@@ -3,11 +3,13 @@ from pathlib import Path
 from PySide6.QtCore import QSize
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication
 from paperreader.ui.markdown import MarkdownBrowser
 from paperreader.ui.work_rail import menu_symbol_icon
 from paperreader.services.themes import THEMES, get_theme
 from paperreader.ui.theme import apply_theme
 from paperreader.ui.settings import open_settings, build_model_settings
+from paperreader.ui.typography import resize_fixed_text_controls
 from paperreader.services.persona import assistant_name
 from paperreader.ui.window_parts.jobs import Job
 
@@ -26,15 +28,39 @@ class ThemesMixin:
             self.error("主题保存失败：" + str(exc))
             return False
         self.profile_config["theme"] = theme
-        apply_theme(theme)
+        apply_theme(theme, self.profile_config["font_family"], self.profile_config["font_size"])
         if self.skill_library is not None:
             self.skill_library.refresh_palette()
         self.centralWidget().update()
         self.update_theme_art()
+        self.top_bar.setProperty("paperreaderBaseHeight", get_theme(theme).header_height)
+        resize_fixed_text_controls(self)
         self.view.refresh_theme()
         self.update_chat_avatar()
         for browser in self.findChildren(MarkdownBrowser):
             browser.refresh_theme()
+        return True
+
+    def change_typography(self, font_key, size_key):
+        previous = (self.profile_config["font_family"], self.profile_config["font_size"])
+        if (font_key, size_key) == previous:
+            return True
+        try:
+            apply_theme(self.profile_config["theme"], font_key, size_key)
+            self.library.save_config(dict(self.library.config(), font_family=font_key,
+                                          font_size=size_key))
+        except Exception as exc:
+            apply_theme(self.profile_config["theme"], *previous)
+            self.error("字体设置失败：" + str(exc))
+            return False
+        self.profile_config["font_family"] = font_key
+        self.profile_config["font_size"] = size_key
+        for root in QApplication.topLevelWidgets():
+            resize_fixed_text_controls(root)
+        for browser in self.findChildren(MarkdownBrowser):
+            browser.refresh_theme()
+        self.update_reading_home()
+        self.updateGeometry()
         return True
 
     def change_pdf_follow_theme(self, enabled):

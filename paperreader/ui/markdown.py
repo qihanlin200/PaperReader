@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QTextBrowser
 from paperreader.services.themes import get_theme
 from paperreader.services.retrieval import CITATION
 from paperreader.ui.theme import ACCENT, current_theme, document_stylesheet, theme_color
+from paperreader.ui.typography import current_family, pixels, scale_stylesheet
 from paperreader.ui.math_render import TOKENS, markdown_html, render_formula
 
 # MathText imports/font discovery and rasterization must not block Qt's event loop.
@@ -121,7 +122,7 @@ class MarkdownBrowser(QTextBrowser):
 
     def _replace_html(self, text):
         self._body_html = text
-        super().setHtml(self._status_html + text)
+        super().setHtml(scale_stylesheet(self._status_html + text))
         if not self.normalize_tables:
             return
 
@@ -284,10 +285,10 @@ class MarkdownBrowser(QTextBrowser):
 
     def html_fragment(self, text):
         pending = set()
-        math_font_px = 13 if self.reading_style else 14
+        math_font_px = pixels(13 if self.reading_style else 14)
         mermaid_style = {
-            'fontFamily': self.font().family(),
-            'fontSize': '13px' if self.reading_style else '14px',
+            'fontFamily': current_family() or self.font().family(),
+            'fontSize': f'{math_font_px}px',
             'primaryColor': theme_color('#213243'),
             'primaryTextColor': theme_color('#d0dbea'),
             'primaryBorderColor': theme_color('#567089'),
@@ -299,7 +300,7 @@ class MarkdownBrowser(QTextBrowser):
             'background': theme_color('#101824'),
         }
         def cached_formula(source, *, max_width=None):
-            key = (source, max_width)
+            key = (source, max_width, math_font_px)
             if key not in self._formula_images:
                 pending.add(key)
                 raise LookupError(source)
@@ -327,9 +328,9 @@ class MarkdownBrowser(QTextBrowser):
             signal = self._math_result
             def work():
                 images = {}
-                for source, max_width in pending:
-                    key = (source, max_width)
-                    try: images[key] = render_formula(source, math_font_px, max_width)
+                for source, max_width, font_px in pending:
+                    key = (source, max_width, font_px)
+                    try: images[key] = render_formula(source, font_px, max_width)
                     except Exception: images[key] = None
                 try: signal.ready.emit(images)
                 except RuntimeError: pass  # The window may have been closed.
@@ -417,7 +418,7 @@ class MarkdownBrowser(QTextBrowser):
             cursor.setBlockFormat(fmt)
             size = {1: 18, 2: 16, 3: 14, 4: 13, 5: 13, 6: 13}.get(level, 13)
             chars = QTextCharFormat()
-            chars.setProperty(QTextFormat.Property.FontPixelSize, size)
+            chars.setProperty(QTextFormat.Property.FontPixelSize, pixels(size))
             chars.setProperty(QTextFormat.Property.FontSizeAdjustment, 0)
             if level:
                 chars.setForeground(QColor(theme_color(ACCENT)))
