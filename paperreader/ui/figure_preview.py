@@ -1,4 +1,4 @@
-"""Full-screen, local-only preview of a cited PDF figure."""
+"""Full-screen, local-only preview of a report image or flowchart."""
 from PySide6.QtCore import QEvent, QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QDialog

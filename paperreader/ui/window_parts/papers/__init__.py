@@ -54,10 +54,9 @@ class PapersMixin:
                     if not is_collapsed:
                         for paper in papers:
                             self.list.add_paper(paper["title"], paper["favorite"], paper["id"])
-            if ungrouped or (groups and not query):
-                if groups:
-                    self.list.add_group("未分组", -1, len(ungrouped), collapsed=-1 in collapsed)
-                if not groups or -1 not in collapsed:
+            if ungrouped or not query:
+                self.list.add_group("未分组", -1, len(ungrouped), collapsed=-1 in collapsed)
+                if -1 not in collapsed:
                     for paper in ungrouped:
                         self.list.add_paper(paper["title"], paper["favorite"], paper["id"])
             row = self.row_for_paper(identifier)

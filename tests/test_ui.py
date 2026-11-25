@@ -93,15 +93,16 @@ class StreamingUITests(unittest.TestCase):
         other['title'] = 'Other study'
         self.library.save(other)
         self.window.reload(self.paper['id'])
-        self.assertEqual(self.window.list.count(), 2)
+        self.assertEqual(self.window.list.count(), 3)
+        self.assertEqual(self.window.list.item(0).data(GROUP_ID_ROLE), -1)
 
         with patch.object(self.library, 'list_metadata', wraps=self.library.list_metadata) as list_metadata:
             self.window.paper_search.setText('other')
             list_metadata.assert_not_called()
-        self.assertEqual(self.window.list.count(), 1)
+        self.assertEqual(self.window.list.count(), 2)
         self.assertEqual(self.window.papers[0]['id'], other['id'])
         self.window.paper_search.clear()
-        self.assertEqual(self.window.list.count(), 2)
+        self.assertEqual(self.window.list.count(), 3)
 
         group_id = self.library.create_group('重点论文')
         self.window.move_paper_to_group(other, group_id)
@@ -119,6 +120,30 @@ class StreamingUITests(unittest.TestCase):
         self.assertEqual(self.window.paper_search.height(), add_group.height())
         self.assertEqual(self.window.paper_search.geometry().top(), add_group.geometry().top())
         self.assertFalse(self.errors)
+
+    def test_ungrouped_header_exists_without_custom_groups_or_papers(self):
+        self.assertEqual(self.library.list_groups(), [])
+        self.assertEqual(self.window.list.item(0).data(GROUP_ID_ROLE), -1)
+        self.assertEqual(self.window.list.item(1).data(PAPER_ID_ROLE), self.paper['id'])
+        self.window.all_papers = []
+        self.window.reload(None, refresh_metadata=False)
+        self.assertEqual(self.window.list.count(), 1)
+        self.assertEqual(self.window.list.item(0).data(GROUP_ID_ROLE), -1)
+
+    def test_new_import_stays_ungrouped_and_duplicate_keeps_its_group(self):
+        group_id = self.library.create_group('已整理')
+        doc = fitz.open(); doc.new_page().insert_text((72, 72), 'New paper')
+        data = doc.tobytes(); doc.close()
+        imported = self.library.import_pdf(data, 'New paper')
+        self.window.reload(imported['id'])
+        metadata = {item['id']: item for item in self.library.list_metadata()}
+        self.assertIsNone(metadata[imported['id']]['group_id'])
+        self.assertEqual(self.window.list.item(1).data(GROUP_ID_ROLE), -1)
+        self.assertGreaterEqual(self.window.row_for_paper(imported['id']), 2)
+        self.library.set_group(imported['id'], group_id)
+        self.library.import_pdf(data, 'New paper')
+        metadata = {item['id']: item for item in self.library.list_metadata()}
+        self.assertEqual(metadata[imported['id']]['group_id'], group_id)
 
     def test_delete_group_dialog_moves_papers_to_ungrouped(self):
         group_id = self.library.create_group('待整理')
@@ -770,8 +795,9 @@ class StreamingUITests(unittest.TestCase):
         original_doc = self.window.doc
         view = self.window.list
 
-        def click_star(row):
+        def click_star(identifier):
             self.app.processEvents()
+            row = self.window.row_for_paper(identifier)
             button = view.itemWidget(view.item(row)).findChild(QToolButton, "PaperFavoriteButton")
             self.assertTrue(button.isVisible())
             self.assertTrue(view.viewport().rect().contains(button.mapTo(view.viewport(), button.rect().topLeft())))
@@ -781,9 +807,9 @@ class StreamingUITests(unittest.TestCase):
             QTest.mouseClick(self.window.windowHandle(), Qt.MouseButton.LeftButton,
                              pos=button.mapTo(self.window, button.rect().center()))
 
-        click_star(1)
+        click_star(identifier)
         self.assertIs(self.window.doc, original_doc)
-        self.assertEqual(view.currentRow(), 1)
+        self.assertEqual(view.currentRow(), self.window.row_for_paper(newer['id']))
         self.assertEqual(self.window.papers[0]['id'], identifier)
         self.assertTrue(self.window.papers[0]['favorite'])
         reopened = Library(self.library.root)
@@ -794,10 +820,10 @@ class StreamingUITests(unittest.TestCase):
         for theme in ('naruto', 'cat'):
             self.assertTrue(self.window.change_theme(theme))
             self.app.processEvents()
-            click_star(0)
+            click_star(identifier)
             self.assertEqual(self.window.papers[0]['id'], newer['id'])
             self.assertFalse(self.window.papers[1]['favorite'])
-            click_star(1)
+            click_star(identifier)
             self.assertEqual(self.window.papers[0]['id'], identifier)
             self.assertIs(self.window.doc, original_doc)
 
@@ -1261,7 +1287,7 @@ class StreamingUITests(unittest.TestCase):
 
         menu.addAction.side_effect = add_action
         menu.exec.side_effect = lambda position: actions["导出学习内容"].trigger()
-        row = next(i for i, paper in enumerate(self.window.papers) if paper["id"] == other["id"])
+        row = self.window.row_for_paper(other["id"])
         position = self.window.list.visualItemRect(self.window.list.item(row)).center()
         with patch('paperreader.ui.window_parts.papers.QMenu', return_value=menu), patch(
             'paperreader.ui.window.QFileDialog.getSaveFileName', return_value=(str(path), "")
@@ -1805,16 +1831,15 @@ class StreamingUITests(unittest.TestCase):
             quick = self.window.paper['analyses']['quick']['text']
             self.window.analysis_mode.setCurrentIndex(1)
             self.window.analyze(); self.wait()
+        self.assertEqual(self.window.deep_view, 'segments')
+        self.assertTrue(self.window.deep_view_buttons['segments'].isChecked())
         analyses = self.library.all()[0]['analyses']
         self.assertEqual(analyses['quick']['text'], quick)
         self.assertTrue(analyses['deep']['complete'])
         self.assertIn('分段精读记录', analyses['deep']['text'])
-        self.assertIn('精读报告', self.window.summary.toPlainText())
+        self.assertIn('分段报告', self.window.summary.toPlainText())
         self.assertIn('report', analyses['deep'])
         self.assertIn('segments_text', analyses['deep'])
-        self.window.deep_view_buttons['segments'].click()
-        self.assertIn('分段报告', self.window.summary.toPlainText())
-        self.assertNotIn('精读报告', self.window.summary.toPlainText())
         self.window.deep_view_buttons['report'].click()
         self.assertIn('精读报告', self.window.summary.toPlainText())
 
@@ -1922,11 +1947,12 @@ class StreamingUITests(unittest.TestCase):
         with patch.object(self.library, 'all', side_effect=AssertionError('Must not load all')), \
              patch.object(self.library, 'get', wraps=self.library.get) as get_record:
             window = Window(library=self.library)
-            self.assertEqual(window.list.count(), 1)
+            self.assertEqual(window.list.count(), 2)
+            self.assertEqual(window.list.item(0).data(GROUP_ID_ROLE), -1)
             self.assertIsNone(window.paper)
             self.assertIsNone(window.doc)
             get_record.assert_not_called()
-            window.list.setCurrentRow(0)
+            window.list.setCurrentRow(window.row_for_paper(self.paper['id']))
             get_record.assert_called_once_with(self.paper['id'])
             self.assertIsNotNone(window.doc)
             window.close()

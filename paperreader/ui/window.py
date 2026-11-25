@@ -497,7 +497,7 @@ class Window(PapersMixin, PdfReadingMixin, FollowupMixin, SessionsNotesMixin, Th
         self.view_mode_group = QButtonGroup(self)
         self.view_mode_group.setExclusive(True)
         self.view_mode_buttons = {}
-        for mode, title in ((4, '四屏模式'), (3, '三屏模式'), (2, '双屏模式')):
+        for mode, title in ((4, '四折叠'), (3, '三折叠'), (2, '双折叠')):
             control = ViewModeButton(mode, title)
             control.clicked.connect(lambda checked=False, selected=mode: self.set_view_mode(selected))
             self.view_mode_group.addButton(control)
@@ -991,6 +991,8 @@ class Window(PapersMixin, PdfReadingMixin, FollowupMixin, SessionsNotesMixin, Th
             self.summary_drafts[draft_key] = draft
             if self.paper is paper and self.analysis_mode.currentData() == mode:
                 self.refresh_analysis()
+        if mode == 'deep':
+            self.select_deep_view('segments')
         render_timer = self.stream_render_timer(self.summary, display_draft)
         self.summary_drafts[draft_key] = (analysis_text() + '\n\n等待模型响应…'
                                           if mode == 'quick' else deep_draft())

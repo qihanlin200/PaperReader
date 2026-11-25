@@ -1,0 +1,40 @@
+<!doctype html><meta charset="utf-8"><title>PaperReader Mermaid renderer</title>
+<script src="mermaid.bundle.js"></script>
+<script>
+  paperreaderMermaid.initialize({
+    startOnLoad: false, securityLevel: 'strict', theme: 'base', look: 'classic', htmlLabels: false,
+    flowchart: { htmlLabels: false }, maxTextSize: 30000, maxEdges: 150
+  });
+  window.paperreaderResult = null;
+  window.paperreaderRender = async function (code, style) {
+    window.paperreaderResult = null;
+    try {
+      paperreaderMermaid.initialize({
+        startOnLoad: false, securityLevel: 'strict', theme: 'base', look: 'classic',
+        htmlLabels: false, flowchart: { htmlLabels: false },
+        maxTextSize: 30000, maxEdges: 150, themeVariables: style
+      });
+      const result = await paperreaderMermaid.render('paperreaderFlow' + Date.now(), code);
+      const documentSvg = new DOMParser().parseFromString(result.svg, 'image/svg+xml');
+      const svg = documentSvg.documentElement;
+      const bounds = svg.viewBox.baseVal;
+      const scale = Math.min(2, Math.sqrt(20000000 / (bounds.width * bounds.height)));
+      if (!(bounds.width > 0 && bounds.height > 0) || bounds.width > 8000 || bounds.height > 12000) {
+        throw new Error('Diagram is too large');
+      }
+      svg.setAttribute('width', String(bounds.width));
+      svg.setAttribute('height', String(bounds.height));
+      svg.style.removeProperty('max-width');
+      const picture = new Image();
+      picture.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(new XMLSerializer().serializeToString(svg));
+      await picture.decode();
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(bounds.width * scale));
+      canvas.height = Math.max(1, Math.round(bounds.height * scale));
+      canvas.getContext('2d').drawImage(picture, 0, 0, canvas.width, canvas.height);
+      window.paperreaderResult = {png: canvas.toDataURL('image/png'), scale: scale};
+    } catch (error) {
+      window.paperreaderResult = 'ERROR:' + String(error);
+    }
+  };
+</script>

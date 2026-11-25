@@ -64,6 +64,32 @@ class FigurePreviewTests(unittest.TestCase):
         self.assertEqual(seen[0][1], '原文图 1')
         browser.close()
 
+    def test_double_click_on_flowchart_requests_fullscreen_preview(self):
+        for scheme in ('paperreader-flow:', 'paperreader-mermaid:'):
+            with self.subTest(scheme=scheme):
+                browser = MarkdownBrowser(reading_style=True)
+                browser.resize(480, 500)
+                image = QImage(300, 180, QImage.Format.Format_RGB888)
+                image.fill(Qt.GlobalColor.red)
+                url = scheme + 'diagram'
+                browser.math_resources[url] = image
+                browser.setHtml(f'<p><img src="{url}" width="300" height="180" /></p>')
+                browser.show()
+                self.app.processEvents()
+                seen = []
+                browser.figurePreviewRequested.connect(lambda preview, label: seen.append((preview, label)))
+                block = browser.document().begin()
+                while block.isValid() and '\ufffc' not in block.text():
+                    block = block.next()
+                self.assertTrue(block.isValid())
+                cursor = QTextCursor(browser.document())
+                cursor.setPosition(block.position() + block.text().index('\ufffc'))
+                rect = browser.cursorRect(cursor)
+                QTest.mouseDClick(browser.viewport(), Qt.MouseButton.LeftButton,
+                                 pos=QPoint(rect.x() + 20, rect.y() + 20))
+                self.assertEqual(seen, [(image, '研究流程图')])
+                browser.close()
+
     def test_report_figure_and_caption_align_with_preceding_list_text(self):
         browser = MarkdownBrowser(reading_style=True)
         browser.resize(700, 650)

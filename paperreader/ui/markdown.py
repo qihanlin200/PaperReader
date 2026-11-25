@@ -89,6 +89,9 @@ class MarkdownBrowser(QTextBrowser):
         self.async_math = False
         self.external_math = False
         self._formula_images = {}
+        self._mermaid_images = {}
+        self._mermaid_pending = set()
+        self._mermaid_renderer = None
         self._math_running = False
         self._markdown_text = ''
         self._markdown_footer = ''
@@ -154,6 +157,11 @@ class MarkdownBrowser(QTextBrowser):
     def refresh_theme(self, old_html=None, new_html=None):
         position = self.verticalScrollBar().value()
         self.document().setDefaultStyleSheet(document_stylesheet())
+        if '```mermaid' in self._markdown_text and old_html is None and new_html is None:
+            self.set_markdown(self._markdown_text, footer_html=self._markdown_footer,
+                              trusted_figures=self._trusted_figures)
+            self.verticalScrollBar().setValue(position)
+            return
         document = self.document()
         layout_enabled = document.isLayoutEnabled()
         document.setLayoutEnabled(False)
@@ -181,8 +189,11 @@ class MarkdownBrowser(QTextBrowser):
                                    QTextCursor.MoveMode.KeepAnchor)
             image_format = candidate.charFormat().toImageFormat()
             url = image_format.name()
-            if url.startswith('paperreader-figure:') and url in self.math_resources:
-                self.figurePreviewRequested.emit(self.math_resources[url], self._figure_labels.get(url, '论文原图'))
+            if url in self.math_resources and url.startswith((
+                    'paperreader-figure:', 'paperreader-flow:', 'paperreader-mermaid:')):
+                label = (self._figure_labels.get(url, '论文原图')
+                         if url.startswith('paperreader-figure:') else '研究流程图')
+                self.figurePreviewRequested.emit(self.math_resources[url], label)
                 event.accept()
                 return
         super().mouseDoubleClickEvent(event)
@@ -274,6 +285,19 @@ class MarkdownBrowser(QTextBrowser):
     def html_fragment(self, text):
         pending = set()
         math_font_px = 13 if self.reading_style else 14
+        mermaid_style = {
+            'fontFamily': self.font().family(),
+            'fontSize': '13px' if self.reading_style else '14px',
+            'primaryColor': theme_color('#213243'),
+            'primaryTextColor': theme_color('#d0dbea'),
+            'primaryBorderColor': theme_color('#567089'),
+            'secondaryColor': theme_color('#17313c'),
+            'tertiaryColor': theme_color('#101824'),
+            'lineColor': theme_color('#91aabd'),
+            'textColor': theme_color('#d0dbea'),
+            'edgeLabelBackground': theme_color('#101824'),
+            'background': theme_color('#101824'),
+        }
         def cached_formula(source, *, max_width=None):
             key = (source, max_width)
             if key not in self._formula_images:
@@ -284,10 +308,20 @@ class MarkdownBrowser(QTextBrowser):
             return image
         def direct_formula(source, *, max_width=None):
             return render_formula(source, math_font_px, max_width)
+        def cached_mermaid(source):
+            key = hashlib.sha256((source + repr(mermaid_style)).encode()).hexdigest()
+            if key not in self._mermaid_images:
+                if key not in self._mermaid_pending:
+                    self._mermaid_pending.add(key)
+                    QTimer.singleShot(0, lambda k=key, s=source, st=mermaid_style:
+                                      self._request_mermaid(k, s, st))
+                raise LookupError(source)
+            return self._mermaid_images[key]
         available_width = min(self.width(), self.viewport().width()) - 32
         result = markdown_html(text, self.math_resources, self.math_sources, available_width,
                                renderer=cached_formula if self.async_math else
-                               direct_formula, trusted_figures=getattr(self, '_trusted_figures', {}))
+                               direct_formula, trusted_figures=getattr(self, '_trusted_figures', {}),
+                               mermaid_renderer=cached_mermaid)
         if pending and not self._math_running:
             self._math_running = True
             signal = self._math_result
@@ -302,6 +336,20 @@ class MarkdownBrowser(QTextBrowser):
             _math_executor.submit(work)
         return result
 
+    def _request_mermaid(self, key, source, style):
+        if self._mermaid_renderer is None:
+            from paperreader.ui.mermaid import MermaidRenderer
+            self._mermaid_renderer = MermaidRenderer(self)
+            self._mermaid_renderer.ready.connect(self._mermaid_ready)
+        self._mermaid_renderer.request(key, source, style)
+
+    def _mermaid_ready(self, key, image):
+        self._mermaid_pending.discard(key)
+        self._mermaid_images[key] = image
+        if len(self._mermaid_images) > 64:
+            self._mermaid_images = {key: image}
+        self._render_math()
+
     def _math_ready(self, images):
         self._math_running = False
         self._formula_images.update(images)
@@ -311,7 +359,8 @@ class MarkdownBrowser(QTextBrowser):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if hasattr(self, '_math_render_timer') and 'paperreader-flow' in self._markdown_text:
+        if hasattr(self, '_math_render_timer') and (
+                'paperreader-flow' in self._markdown_text or '```mermaid' in self._markdown_text):
             self._math_render_timer.start()
 
     def _render_math(self):

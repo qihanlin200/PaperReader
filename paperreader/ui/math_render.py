@@ -20,11 +20,22 @@ BARE_MATH_MARK = re.compile(
     r'(?<![A-Za-z0-9])[A-Za-z]_(?:\{|[a-z0-9Α-Ωα-ω])'
 )
 HAN = re.compile(r'[\u3400-\u9fff]')
-FLOW_BLOCK = re.compile(r'(?m)^```paperreader-flow[ \t]*\r?\n([\s\S]*?)\r?\n```[ \t]*$')
+FLOW_BLOCK = re.compile(r'(?m)^```paperreader-flow[ \t]*\r?\n([\s\S]*?)\r?\n```[ \t]*\r?$')
+MERMAID_BLOCK = re.compile(r'(?m)^```mermaid[ \t]*\r?\n([\s\S]*?)\r?\n```[ \t]*\r?$')
+MERMAID_NODE = re.compile(r'(?m)^\s*[A-Za-z_][\w-]*\s*(?:\[|\(|\{)')
+FLOW_ARROW = re.compile(r'^[\s│┃|↓↑→←↘↙↗↖⇩⇧]+$')
+DIAGRAM_PAGE = re.compile(
+    r'\s*[（(]\s*(?:第\s*\d+\s*页|p\.\s*\d+)\s*[）)]|'
+    r'\s*第\s*\d+\s*页(?=\s*[\]"}\)])', re.I)
+
+
+def _strip_diagram_pages(value):
+    return DIAGRAM_PAGE.sub('', value)
 
 
 def _flow_plain_text(value):
     """Keep formula symbols readable inside a diagram without raw TeX escapes."""
+    value = _strip_diagram_pages(value)
     value = re.sub(r'\\text\{([^{}]*)\}', r'\1', value)
     for command, glyph in ((r'\mid', '∣'), (r'\cdot', '·'), (r'\times', '×'),
                            (r'\rightarrow', '→'), (r'\to', '→'), (r'\leftarrow', '←'),
@@ -38,16 +49,20 @@ def _flow_plain_text(value):
 
 
 def _flow_image(source, width):
-    """Draw connected nodes directly so the flow never becomes a grid table."""
-    lines = [line.strip() for line in source.splitlines() if line.strip()]
-    if not 3 <= len(lines) <= 7 or len(source) > 1400:
+    """Render structured relationships, retaining older linear flow blocks."""
+    from paperreader.ui.flowchart import EDGE, render_flow
+    if any(EDGE.fullmatch(line.strip()) for line in source.splitlines()):
+        return render_flow(source, width, _flow_plain_text)
+    lines = [line.strip() for line in source.splitlines()
+             if line.strip() and not FLOW_ARROW.fullmatch(line.strip())]
+    if not 3 <= len(lines) <= 50 or len(source) > 16000:
         return None
     steps = []
     for line in lines:
         title, separator, detail = line.partition('|')
         title, detail = title.strip(), detail.strip()
         if (not separator or '|' in detail or not 1 <= len(title) <= 32
-                or not 1 <= len(detail) <= 180):
+                or not 1 <= len(detail) <= 260):
             return None
         steps.append((_flow_plain_text(title), _flow_plain_text(detail)))
     from paperreader.ui.theme import theme_color
@@ -420,7 +435,25 @@ def render_formula(source, font_px=13, max_width=None):
 
 
 def markdown_html(text, resources, sources, width=600, renderer=render_formula,
-                  trusted_figures=None):
+                  trusted_figures=None, mermaid_renderer=None):
+    mermaid_blocks = {}
+    def replace_mermaid(match):
+        source = _strip_diagram_pages(match.group(1).strip())
+        if (not source or len(source) > 16000 or '%%{' in source or
+                len(MERMAID_NODE.findall(source)) > 50 or mermaid_renderer is None):
+            return match.group()
+        token = 'PRMERMAID' + hashlib.sha256(source.encode()).hexdigest() + 'END'
+        try:
+            diagram = mermaid_renderer(source)
+        except LookupError:
+            diagram = 'pending'
+        except Exception:
+            return match.group()
+        if diagram is None:
+            return match.group()
+        mermaid_blocks[token] = diagram
+        return '\n\n' + token + '\n\n'
+    text = MERMAID_BLOCK.sub(replace_mermaid, text)
     flow_blocks = {}
     def replace_flow(match):
         diagram = _flow_image(match.group(1), width)
@@ -473,6 +506,19 @@ def markdown_html(text, resources, sources, width=600, renderer=render_formula,
     result = re.search(r'<body[^>]*>(.*)</body>', doc.toHtml(), re.S).group(1)
     for token, markup in replacements.items(): result = result.replace(token, markup)
     for token, label in labels.items(): result = result.replace(token, label)
+    for token, diagram in mermaid_blocks.items():
+        if isinstance(diagram, str) and diagram == 'pending':
+            markup = '<p align="center">正在渲染流程图…</p>'
+        else:
+            url = 'paperreader-mermaid:' + token[9:-3]
+            resources[url] = diagram
+            size = round(min(max(80, width), max(1, diagram.width() / diagram.devicePixelRatio())))
+            height = round(diagram.height() * size / max(1, diagram.width()))
+            markup = (f'<p align="center" style="margin-top:8px; margin-bottom:10px;">'
+                      f'<img src="{url}" width="{size}" height="{height}" '
+                      f'alt="研究流程图" /></p>')
+        result = re.sub(r'<p[^>]*>\s*' + re.escape(token) + r'\s*</p>',
+                        lambda _: markup, result)
     for token, (diagram, source) in flow_blocks.items():
         url = 'paperreader-flow:' + token[6:-3]
         resources[url] = diagram

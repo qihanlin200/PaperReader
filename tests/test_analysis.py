@@ -27,9 +27,9 @@ class AnalysisTests(unittest.TestCase):
         self.assertIn('分段报告会显示在窄栏中', calls[0])
         self.assertIn('概念比较、流程、术语、优缺点和文字证据不要排成多列表格', calls[0])
         self.assertIn('只有必须并排比较的实验数值才使用 Markdown 表格', calls[0])
-        self.assertIn('```paperreader-flow', calls[0])
-        self.assertIn('每步标原文页码', calls[0])
-        self.assertIn('关键操作/判断→产出或作用', calls[0])
+        self.assertIn('```mermaid', calls[0])
+        self.assertIn('节点标签简短，不要在图中写引用页码', calls[0])
+        self.assertIn('C -->|是| D', calls[0])
         self.assertIn('核心知识', calls[0])
         self.assertIn('## 优点与可改进点', calls[0])
         for i in range(5): self.assertIn(f'PAGE{i}', calls[0])
@@ -165,7 +165,7 @@ class AnalysisTests(unittest.TestCase):
         self.assertTrue(any('请整理以下分段证据' in call for call in calls))
         self.assertIn('最终报告', report['text'])
         synthesis = next(call for call in calls if '基于这些记录综合为可独立阅读的精读报告' in call)
-        self.assertIn('关键操作/判断→产出或作用', synthesis)
+        self.assertIn('条件分支、回路、并行与汇合关系', synthesis)
         self.assertIn('## 优点与可改进点', synthesis)
 
     def test_legacy_segment_prompt_also_uses_narrow_layout(self):

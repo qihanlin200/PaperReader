@@ -5,6 +5,7 @@ import unittest
 from PySide6.QtWidgets import QApplication
 from paperreader.ui.math_render import markdown_html
 from paperreader.ui.markdown import MarkdownBrowser
+from paperreader.ui.flowchart import parse_flow
 
 
 class MathTests(unittest.TestCase):
@@ -165,6 +166,70 @@ class MathTests(unittest.TestCase):
         unsafe = markdown_html('```paperreader-flow\nA | <script>\nB | b\nC | c\n```', {}, {})
         self.assertIn('&lt;script&gt;', unsafe)
 
+    def test_research_flow_accepts_windows_lines_and_connector_arrows(self):
+        steps = [f'步骤{i} | 执行并核对第{i}步的结果（第{i}页）'
+                 for i in range(1, 9)]
+        source = ('```paperreader-flow\n' + '\n↓\n'.join(steps)
+                  + '\n```\n\n后续内容').replace('\n', '\r\n')
+        resources = {}
+        result = markdown_html(source, resources, {}, width=360)
+        self.assertIn('<img src="paperreader-flow:', result)
+        self.assertNotIn('<pre', result)
+        self.assertEqual(len(resources), 1)
+        self.assertIn('后续内容', result)
+
+    def test_research_flow_accepts_fifty_nodes(self):
+        steps = '\n'.join(f'步骤{i} | 执行步骤{i}' for i in range(1, 51))
+        resources = {}
+        result = markdown_html(f'```paperreader-flow\n{steps}\n```', resources, {}, width=260)
+        self.assertIn('<img src="paperreader-flow:', result)
+        self.assertEqual(len(resources), 1)
+        too_many = markdown_html(f'```paperreader-flow\n{steps}\n步骤51 | 额外一步\n```', {}, {})
+        self.assertIn('步骤51', too_many)
+
+    def test_structured_flow_renders_branches_loops_and_merge(self):
+        source = ('```paperreader-flow\n'
+                  'N1 | start | 开始 | 接收研究任务（第1页）\n'
+                  'N2 | input | 输入 | 收集数据（第2页）\n'
+                  'N3 | decision | 条件判断 | 数据是否足够（第3页）\n'
+                  'N4 | process | 补充数据 | 继续收集（第3页）\n'
+                  'N5 | parallel | 并行实验 | 启动两项实验（第4页）\n'
+                  'N6 | data | 实验记录 | 保存结果（第5页）\n'
+                  'N7 | merge | 汇合 | 汇总结果（第6页）\n'
+                  'N8 | end | 结束 | 得到结论（第7页）\n'
+                  'N1 -> N2\nN2 -> N3\n'
+                  'N3 -[否]-> N4\nN4 -[重试]-> N2\n'
+                  'N3 -[是]-> N5\nN5 -> N6\nN6 -> N7\nN7 -> N8\n'
+                  '```')
+        parsed = parse_flow(source.removeprefix('```paperreader-flow\n').removesuffix('\n```'))
+        self.assertEqual(len(parsed[0]), 8)
+        self.assertIn(('N4', 'N2', '重试'), parsed[1])
+        resources = {}
+        result = markdown_html(source.replace('\n', '\r\n'), resources, {}, width=340)
+        self.assertIn('<img src="paperreader-flow:', result)
+        self.assertNotIn('<pre', result)
+        self.assertEqual(len(resources), 1)
+        self.assertLessEqual(next(iter(resources.values())).width() / 2, 340)
+
+    def test_structured_flow_rejects_undefined_connection(self):
+        source = ('N1 | start | 开始 | 输入\n'
+                  'N2 | process | 操作 | 处理\n'
+                  'N3 | end | 完成 | 输出\n'
+                  'N1 -> N2\nN2 -> N4')
+        self.assertIsNone(parse_flow(source))
+
+    def test_structured_flow_accepts_fifty_nodes(self):
+        nodes = ['N1 | start | 开始 | 开始（第1页）']
+        nodes += [f'N{i} | process | 步骤{i} | 执行（第{i}页）' for i in range(2, 50)]
+        nodes.append('N50 | end | 完成 | 得到结果（第50页）')
+        edges = [f'N{i} -> N{i + 1}' for i in range(1, 50)]
+        source = '\n'.join(nodes + edges)
+        self.assertEqual(len(parse_flow(source)[0]), 50)
+        resources = {}
+        result = markdown_html(f'```paperreader-flow\n{source}\n```', resources, {}, width=260)
+        self.assertIn('<img src="paperreader-flow:', result)
+        self.assertEqual(len(resources), 1)
+
     def test_analysis_heading_paragraph_and_list_share_line_spacing(self):
         view = MarkdownBrowser(reading_style=True)
         try:
@@ -204,6 +269,42 @@ class MathTests(unittest.TestCase):
         self.assertIn('font-weight:700;">【推断】</span>实验说明', rendered)
         self.assertNotIn('**【推断】**实验说明', rendered)
         self.assertIn('**【事实】**原样', rendered)
+
+    def test_mermaid_block_uses_rendered_resource(self):
+        from PySide6.QtGui import QImage
+        image = QImage(400, 200, QImage.Format.Format_ARGB32)
+        image.fill(0)
+        image.setDevicePixelRatio(2)
+        resources = {}
+        source = '```mermaid\nflowchart TD\nA([开始]) --> B{判断}\n```'
+        result = markdown_html(source, resources, {}, width=180,
+                               mermaid_renderer=lambda code: image)
+        self.assertIn('paperreader-mermaid:', result)
+        self.assertIn('width="180"', result)
+        self.assertEqual(len(resources), 1)
+        self.assertNotIn('flowchart TD', result)
+
+    def test_mermaid_pending_and_unsafe_config(self):
+        source = '```mermaid\nflowchart TD\nA --> B\n```'
+        def pending(_): raise LookupError()
+        self.assertIn('正在渲染流程图', markdown_html(
+            source, {}, {}, mermaid_renderer=pending))
+        self.assertIn('%%{init', markdown_html(
+            '```mermaid\n%%{init: {}}%%\nflowchart TD\nA --> B\n```', {}, {},
+            mermaid_renderer=lambda _: self.fail('unsafe config rendered')))
+        oversized = '```mermaid\nflowchart TD\n' + '\n'.join(
+            f'N{i}[节点{i}]' for i in range(51)) + '\n```'
+        self.assertIn('N50', markdown_html(oversized, {}, {},
+            mermaid_renderer=lambda _: self.fail('oversized graph rendered')))
+
+    def test_mermaid_hides_page_citations_in_diagram(self):
+        seen = []
+        def pending(source):
+            seen.append(source)
+            raise LookupError()
+        markdown_html('```mermaid\nflowchart TD\nA[处理（第3页）] --> B[结果 第4页]\n```',
+                      {}, {}, mermaid_renderer=pending)
+        self.assertEqual(seen, ['flowchart TD\nA[处理] --> B[结果]'])
 
 
     def test_formula_transparent_background_and_table_alignment(self):
